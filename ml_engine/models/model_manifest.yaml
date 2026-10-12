@@ -1,0 +1,19 @@
+models:
+  - name: navigation
+    path: ml_engine/models/navigation_best.pt
+    version: 1.0.0
+    task: detection
+    classes: dynamic
+  - name: fod
+    path: ml_engine/models/FOD_Karhtikeyan.pt
+    version: 1.0.0
+    task: detection
+    classes:
+      0: FOD
+  - name: runway_light
+    path: ml_engine/models/runway_light_best.pt
+    version: 1.0.0
+    task: detection
+    classes:
+      0: LIGHT OFF
+      1: LIGHT ON

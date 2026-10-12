@@ -1,0 +1,45 @@
+models:
+  navigation:
+    path: ml_engine/models/navigation_best.pt
+    confidence: 0.25
+    iou: 0.45
+    enabled: true
+    every_n_frames: 1
+
+  fod:
+    path: ml_engine/models/FOD_Karhtikeyan.pt
+    confidence: 0.18
+    iou: 0.45
+    enabled: true
+    every_n_frames: 1
+
+  runway_light:
+    path: ml_engine/models/runway_light_best.pt
+    confidence: 0.20
+    iou: 0.45
+    enabled: true
+    every_n_frames: 10
+
+    scan_start: 0.52
+    scan_height: 0.20
+
+    tile_size: 640
+    tile_stride: 480
+    imgsz: 640
+
+    preprocess: auto
+    filter_mode: sensitive
+
+    on_min_conf: 0.20
+    off_min_conf: 0.20
+    min_box_side: 2.5
+    max_box_side: 70
+    max_box_area: 2600
+    min_aspect: 0.25
+    max_aspect: 4.0
+
+    tracking: true
+    paint_reject: true
+    fault_confirmation_frames: 5
+    refine_boxes: true
+    infer_missing_off: false

@@ -1,0 +1,62 @@
+# Python virtual environments
+venv/
+.venv/
+backend/venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.DS_Store
+.vscode/
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Generated outputs
+runs/
+
+# Frontend dependencies and build output
+node_modules/
+.next/
+out/
+dist/
+build/
+
+# Uploaded videos and generated analysis results
+data/uploads/
+data/results/
+
+# Local database and database backups
+drone_nav.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Python environments
+backend/venv/
+
+# Local data, uploaded videos, and generated predictions
+data/
+
+# Frontend dependencies
+frontend/node_modules/
+
+# Build outputs
+frontend/.next/
+frontend/out/
+frontend/dist/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3

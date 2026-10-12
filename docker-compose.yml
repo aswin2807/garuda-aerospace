@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: drone_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: drone_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: drone_backend
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/drone_ai
+      JWT_SECRET: super-secret-drone-navigation-ai-jwt-key-2026
+      RTSP_URL: ${RTSP_URL:-rtsp://192.168.144.108:554/stream=1}
+      NAVIGATION_MODEL_PATH: /app/ml_engine/models/navigation_best.pt
+      FOD_MODEL_PATH: /app/ml_engine/models/FOD_Karhtikeyan.pt
+      RUNWAY_LIGHT_MODEL_PATH: /app/ml_engine/models/runway_light_best.pt
+      MODELS_CONFIG_PATH: /app/ml_engine/configs/models.yaml
+      NAVIGATION_CONFIDENCE: 0.25
+      FOD_CONFIDENCE: 0.18
+      RUNWAY_LIGHT_CONFIDENCE: 0.25
+      IOU_THRESHOLD: 0.45
+      RUNWAY_SCAN_START: 0.52
+      RUNWAY_SCAN_HEIGHT: 0.20
+      RUNWAY_TILE_SIZE: 640
+      RUNWAY_TILE_STRIDE: 480
+      RUNWAY_DETECT_STRIDE: 10
+      RUNWAY_PREPROCESS: auto
+      RUNWAY_TRACKING: "true"
+      RUNWAY_REFINE_BOXES: "true"
+      RUNWAY_INFER_MISSING_OFF: "false"
+      USE_TILED_INFERENCE: "true"
+      TILE_SIZE: 640
+      TILE_OVERLAP: 0.25
+      USE_FULL_FRAME_PASS: "true"
+      LIGHT_FAULT_CONFIRM_FRAMES: 5
+    volumes:
+      - ./ml_engine:/app/ml_engine
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: drone_frontend
+    restart: always
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_WS_URL: ws://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

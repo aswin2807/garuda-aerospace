@@ -1,0 +1,22 @@
+# Training Configuration for Drone Navigation AI (YOLOv11)
+model: yolo11n.pt
+data: ml_engine/datasets/data.yaml
+
+epochs: 100
+imgsz: 512
+batch: 16
+
+device: 0
+
+project: runs
+name: drone_navigation
+
+patience: 20
+workers: 4
+augment: true
+
+optimizer: AdamW
+lr0: 0.002
+lrf: 0.01
+save: true
+val: true
