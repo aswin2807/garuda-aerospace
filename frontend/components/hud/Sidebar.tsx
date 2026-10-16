@@ -2,7 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   Navigation,
@@ -14,8 +14,10 @@ import {
   Layers,
   History,
   Radio,
-  Film,
+  Database,
+  LogOut,
 } from "lucide-react";
+import { useAuthStore } from "../../stores/authStore";
 
 export type SidebarFocusMode = "all" | "navigation" | "fod" | "runway";
 
@@ -29,8 +31,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectFocus,
 }) => {
   const pathname = usePathname();
+  const router = useRouter();
+  const logout = useAuthStore((s) => s.logout);
 
   const isHome = pathname === "/" || pathname === "/dashboard";
+
 
   const handleNavClick = (mode: SidebarFocusMode) => {
     if (onSelectFocus) {
@@ -80,24 +85,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span className="font-semibold">Live Surveillance</span>
         </Link>
 
-        {/* 3. Offline Surveillance */}
-        <Link
-          href="/offline-surveillance"
-          className={`flex items-center space-x-2.5 px-4 py-2.5 transition-all text-left w-full ${
-            pathname === "/offline-surveillance" || pathname === "/analysis"
-              ? "bg-[#EAF3FF] text-[#0066FF] border-l-2 border-[#0066FF]"
-              : "text-[#111827] hover:text-[#0066FF] hover:bg-[#F0F6FF] border-l-2 border-transparent"
-          }`}
-        >
-          <Film
-            className={`w-4 h-4 ${
-              pathname === "/offline-surveillance" || pathname === "/analysis" ? "text-[#0066FF]" : "text-[#5B6472]"
-            }`}
-          />
-          <span className="font-semibold">Offline Surveillance</span>
-        </Link>
-
-        {/* 4. Navigation Module */}
+        {/* 3. Navigation Module */}
         <Link
           href="/navigation"
           className={`flex items-center space-x-2.5 px-4 py-2.5 transition-all text-left w-full ${
@@ -114,7 +102,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span className="font-semibold">Navigation</span>
         </Link>
 
-        {/* 5. FOD Debris Module */}
+        {/* 4. FOD Debris Module */}
         <Link
           href="/fod"
           className={`flex items-center space-x-2.5 px-4 py-2.5 transition-all text-left w-full ${
@@ -131,7 +119,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span className="font-semibold">FOD Debris</span>
         </Link>
 
-        {/* 6. Runway Light Module */}
+        {/* 5. Runway Light Module */}
         <Link
           href="/runway-light"
           className={`flex items-center space-x-2.5 px-4 py-2.5 transition-all text-left w-full ${
@@ -148,7 +136,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span className="font-semibold">Runway Light</span>
         </Link>
 
-        {/* 7. Analysis History */}
+        {/* 6. Analysis History */}
         <Link
           href="/history"
           className={`flex items-center space-x-2.5 px-4 py-2.5 transition-all text-left w-full ${
@@ -165,6 +153,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }`}
           />
           <span className="font-semibold">Analysis History</span>
+        </Link>
+
+        {/* 7. Central Database Results */}
+        <Link
+          href="/results"
+          className={`flex items-center space-x-2.5 px-4 py-2.5 transition-all text-left w-full ${
+            pathname === "/results"
+              ? "bg-[#EAF3FF] text-[#0066FF] border-l-2 border-[#0066FF]"
+              : "text-[#111827] hover:text-[#0066FF] hover:bg-[#F0F6FF] border-l-2 border-transparent"
+          }`}
+        >
+          <Database
+            className={`w-4 h-4 ${
+              pathname === "/results" ? "text-[#0066FF]" : "text-[#5B6472]"
+            }`}
+          />
+          <span className="font-semibold">Central Results</span>
         </Link>
 
         {/* Divider */}
@@ -210,8 +215,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
 
-      {/* Bottom Settings Link */}
-      <div className="p-3 border-t border-[#D9DEE7]">
+      {/* Bottom Settings & Auth Links */}
+      <div className="p-3 border-t border-[#D9DEE7] space-y-1">
         <Link
           href="/settings"
           className={`flex items-center space-x-2.5 px-3 py-2 rounded transition-all ${
@@ -227,9 +232,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
           />
           <span className="font-semibold">Settings</span>
         </Link>
+
+        <button
+          type="button"
+          onClick={async () => {
+            await logout();
+            router.replace("/login");
+          }}
+          className="flex items-center space-x-2.5 px-3 py-2 rounded transition-all w-full text-left text-[#111827] hover:text-red-600 hover:bg-red-50"
+        >
+          <LogOut className="w-4 h-4 text-[#5B6472]" />
+          <span className="font-semibold">Sign Out</span>
+        </button>
       </div>
     </aside>
   );
 };
+
 
 export default Sidebar;

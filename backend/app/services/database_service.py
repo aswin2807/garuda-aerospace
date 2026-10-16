@@ -185,6 +185,15 @@ class DatabaseService:
                 model_name = str(d.get("model", ""))
                 track_id = d.get("track_id")
 
+                coords = d.get("debris_coordinates") or {}
+                lat = coords.get("latitude") or d.get("latitude")
+                lon = coords.get("longitude") or d.get("longitude")
+                unc = coords.get("uncertainty_m") or d.get("coordinate_uncertainty_m")
+                st = coords.get("status") or d.get("coordinate_status") or "unavailable"
+                meth = coords.get("method") or d.get("coordinate_method") or "none"
+                crs = coords.get("crs") or d.get("coordinate_crs") or "WGS84"
+                fmt = coords.get("formatted") or d.get("coordinate_formatted")
+
                 rec = Detection(
                     job_id=session_id,
                     session_id=session_id,
@@ -203,6 +212,13 @@ class DatabaseService:
                     y2=y2,
                     track_id=int(track_id) if track_id is not None else None,
                     frame_number=frame_id,
+                    latitude=float(lat) if lat is not None else None,
+                    longitude=float(lon) if lon is not None else None,
+                    coordinate_uncertainty_m=float(unc) if unc is not None else None,
+                    coordinate_status=str(st),
+                    coordinate_method=str(meth),
+                    coordinate_crs=str(crs),
+                    coordinate_formatted=str(fmt) if fmt else None,
                     timestamp=get_utc_now()
                 )
                 records.append(rec)
@@ -251,6 +267,15 @@ class DatabaseService:
                 model_name = str(d.get("model", ""))
                 track_id = d.get("track_id")
 
+                coords = d.get("debris_coordinates") or {}
+                lat = coords.get("latitude") or d.get("latitude")
+                lon = coords.get("longitude") or d.get("longitude")
+                unc = coords.get("uncertainty_m") or d.get("coordinate_uncertainty_m")
+                st = coords.get("status") or d.get("coordinate_status") or "unavailable"
+                meth = coords.get("method") or d.get("coordinate_method") or "none"
+                crs = coords.get("crs") or d.get("coordinate_crs") or "WGS84"
+                fmt = coords.get("formatted") or d.get("coordinate_formatted")
+
                 rec = Detection(
                     job_id=session_id,
                     session_id=session_id,
@@ -269,6 +294,13 @@ class DatabaseService:
                     y2=y2,
                     track_id=int(track_id) if track_id is not None else None,
                     frame_number=frame_id,
+                    latitude=float(lat) if lat is not None else None,
+                    longitude=float(lon) if lon is not None else None,
+                    coordinate_uncertainty_m=float(unc) if unc is not None else None,
+                    coordinate_status=str(st),
+                    coordinate_method=str(meth),
+                    coordinate_crs=str(crs),
+                    coordinate_formatted=str(fmt) if fmt else None,
                     timestamp=now
                 )
                 records.append(rec)

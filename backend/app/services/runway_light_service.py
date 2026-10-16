@@ -117,13 +117,29 @@ def box_iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, 
     return inter / (area_a + area_b - inter + 1e-6)
 
 
-def nms(detections: List[Dict[str, Any]], threshold: float = 0.35) -> List[Dict[str, Any]]:
-    """Non-maximum suppression based on confidence and overlap ratio (PRD Section 11)."""
+def nms(detections: List[Dict[str, Any]], threshold: float = 0.35, min_center_dist: float = 8.0) -> List[Dict[str, Any]]:
+    """
+    Non-maximum suppression based on confidence, overlap ratio, IoU, and center proximity (PRD Section 11).
+    Deduplicates overlapping sliding-window tiles and full-frame passes.
+    """
     sorted_dets = sorted(detections, key=lambda d: d.get("conf", 0.0), reverse=True)
-    kept = []
+    kept: List[Dict[str, Any]] = []
     for det in sorted_dets:
         xyxy = det["xyxy"]
-        if all(overlap_ratio(xyxy, old["xyxy"]) < threshold for old in kept):
+        cx = (xyxy[0] + xyxy[2]) / 2.0
+        cy = (xyxy[1] + xyxy[3]) / 2.0
+        is_dup = False
+        for old in kept:
+            old_xyxy = old["xyxy"]
+            if overlap_ratio(xyxy, old_xyxy) >= threshold or box_iou(xyxy, old_xyxy) >= threshold:
+                is_dup = True
+                break
+            old_cx = (old_xyxy[0] + old_xyxy[2]) / 2.0
+            old_cy = (old_xyxy[1] + old_xyxy[3]) / 2.0
+            if ((cx - old_cx) ** 2 + (cy - old_cy) ** 2) < (min_center_dist ** 2):
+                is_dup = True
+                break
+        if not is_dup:
             kept.append(det)
     return kept
 
@@ -220,31 +236,45 @@ def detection_quality_ok(
 def refine_detection_box(
     frame: np.ndarray,
     det: Dict[str, Any],
-    refine_boxes: bool = True,
+    refine_boxes: bool = False,
     refine_only_on: bool = True,
-    refine_margin: int = 4,
-    min_display_box: int = 10,
+    refine_margin: int = 2,
+    min_display_box: int = 8,
 ) -> Dict[str, Any]:
     """
-    Refines bounding box around actual bright runway beacon contour (PRD Section 12).
+    Safely clips bounding box to image bounds and optionally tightens around bright light beacon (PRD Section 12).
+    Keeps model's original calibrated bounding box by default to avoid box bloating or centroid drift.
     """
-    if not refine_boxes:
-        return det
-    if det.get("class_id") == 0 and refine_only_on:
-        return det
-
-    x1, y1, x2, y2 = [int(round(v)) for v in det["xyxy"]]
+    x1, y1, x2, y2 = [float(v) for v in det["xyxy"]]
     h, w = frame.shape[:2]
-    bw = max(1, x2 - x1)
-    bh = max(1, y2 - y1)
-    pad = max(6, int(max(bw, bh) * 1.8))
-    px1 = max(0, x1 - pad)
-    py1 = max(0, y1 - pad)
-    px2 = min(w, x2 + pad)
-    py2 = min(h, y2 + pad)
+    # Always clamp to valid frame boundaries
+    x1 = max(0.0, min(x1, float(w - 1)))
+    y1 = max(0.0, min(y1, float(h - 1)))
+    x2 = max(x1 + 1.0, min(x2, float(w)))
+    y2 = max(y1 + 1.0, min(y2, float(h)))
+
+    if not refine_boxes:
+        det_copy = det.copy()
+        det_copy["xyxy"] = (x1, y1, x2, y2)
+        return det_copy
+
+    if det.get("class_id") == 0 and refine_only_on:
+        det_copy = det.copy()
+        det_copy["xyxy"] = (x1, y1, x2, y2)
+        return det_copy
+
+    bw = max(1.0, x2 - x1)
+    bh = max(1.0, y2 - y1)
+    pad = max(4, int(max(bw, bh) * 1.2))
+    px1 = max(0, int(round(x1)) - pad)
+    py1 = max(0, int(round(y1)) - pad)
+    px2 = min(w, int(round(x2)) + pad)
+    py2 = min(h, int(round(y2)) + pad)
     patch = frame[py1:py2, px1:px2]
     if patch.size == 0:
-        return det
+        det_copy = det.copy()
+        det_copy["xyxy"] = (x1, y1, x2, y2)
+        return det_copy
 
     gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -253,42 +283,44 @@ def refine_detection_box(
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return det
+        det_copy = det.copy()
+        det_copy["xyxy"] = (x1, y1, x2, y2)
+        return det_copy
 
-    old_cx = (x1 + x2) / 2 - px1
-    old_cy = (y1 + y2) / 2 - py1
+    old_cx = (x1 + x2) / 2.0 - px1
+    old_cy = (y1 + y2) / 2.0 - py1
     candidates = []
     for contour in contours:
         area = cv2.contourArea(contour)
         if area < 2:
             continue
         rx, ry, rw, rh = cv2.boundingRect(contour)
-        cx = rx + rw / 2
-        cy = ry + rh / 2
+        cx = rx + rw / 2.0
+        cy = ry + rh / 2.0
         dist = ((cx - old_cx) ** 2 + (cy - old_cy) ** 2) ** 0.5
-        if dist > max(pad, 10):
+        if dist > max(pad, 8):
             continue
-        candidates.append((area / (1 + dist), rx, ry, rw, rh))
+        candidates.append((area / (1.0 + dist), rx, ry, rw, rh))
     if not candidates:
-        return det
+        det_copy = det.copy()
+        det_copy["xyxy"] = (x1, y1, x2, y2)
+        return det_copy
 
     _, rx, ry, rw, rh = max(candidates, key=lambda item: item[0])
-    nx1 = max(0, px1 + rx - refine_margin)
-    ny1 = max(0, py1 + ry - refine_margin)
-    nx2 = min(w, px1 + rx + rw + refine_margin)
-    ny2 = min(h, py1 + ry + rh + refine_margin)
+    nx1 = max(0.0, float(px1 + rx - refine_margin))
+    ny1 = max(0.0, float(py1 + ry - refine_margin))
+    nx2 = min(float(w), float(px1 + rx + rw + refine_margin))
+    ny2 = min(float(h), float(py1 + ry + rh + refine_margin))
 
-    cx = (nx1 + nx2) / 2
-    cy = (ny1 + ny2) / 2
-    if nx2 - nx1 < min_display_box:
-        nx1 = max(0, cx - min_display_box / 2)
-        nx2 = min(w, cx + min_display_box / 2)
-    if ny2 - ny1 < min_display_box:
-        ny1 = max(0, cy - min_display_box / 2)
-        ny2 = min(h, cy + min_display_box / 2)
+    # Reject refinement if it drifted excessively from original box
+    ref_iou = box_iou((x1, y1, x2, y2), (nx1, ny1, nx2, ny2))
+    if ref_iou < 0.40:
+        det_copy = det.copy()
+        det_copy["xyxy"] = (x1, y1, x2, y2)
+        return det_copy
 
     refined = det.copy()
-    refined["xyxy"] = (float(nx1), float(ny1), float(nx2), float(ny2))
+    refined["xyxy"] = (nx1, ny1, nx2, ny2)
     return refined
 
 
@@ -439,18 +471,48 @@ def draw_corner_box(
     cv2.line(img, (x2, y2), (x2, y2 - corner), color, thickness, cv2.LINE_AA)
 
 
-def put_label(img: np.ndarray, text: str, x: int, y: int, color: Tuple[int, int, int], scale: float = 0.46):
-    """Draws compact HUD label with solid background (PRD Section 23)."""
+def put_label(
+    img: np.ndarray,
+    text: str,
+    x: int,
+    y: int,
+    color: Tuple[int, int, int],
+    scale: float = 0.44,
+    y2: Optional[int] = None,
+):
+    """
+    Draws compact, crisp HUD label with solid background (PRD Section 2.2).
+    Intelligently positions above or below the bounding box without obscuring the light fixture.
+    """
     font = cv2.FONT_HERSHEY_SIMPLEX
     thickness = 1
     (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
-    x = int(max(0, min(x, img.shape[1] - tw - 8)))
-    y = int(max(th + 8, y))
-    bg1 = (x, y - th - baseline - 6)
-    bg2 = (x + tw + 8, y + baseline + 3)
+    img_h, img_w = img.shape[:2]
+
+    pad_x = 4
+    pad_y = 3
+    pill_w = tw + (pad_x * 2)
+    pill_h = th + baseline + (pad_y * 2)
+
+    # Position intelligently: above box by default; below box if near top of image
+    if y2 is not None and (y - pill_h < 4):
+        top_y = min(img_h - pill_h - 2, int(y2) + 2)
+    else:
+        top_y = max(2, int(y) - pill_h - 2)
+
+    left_x = max(2, min(int(x), img_w - pill_w - 2))
+    bottom_y = top_y + pill_h
+
+    bg1 = (left_x, top_y)
+    bg2 = (left_x + pill_w, bottom_y)
+
+    # Solid colored badge matching bounding box
     cv2.rectangle(img, bg1, bg2, color, -1)
-    cv2.rectangle(img, bg1, bg2, color, 1, cv2.LINE_AA)
-    cv2.putText(img, text, (x + 4, y - 4), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    # Subtle dark border around pill for crisp separation from bright/dark backgrounds
+    cv2.rectangle(img, bg1, bg2, (18, 18, 18), 1, cv2.LINE_AA)
+    # Crisp white typography
+    text_origin = (left_x + pad_x, top_y + th + pad_y)
+    cv2.putText(img, text, text_origin, font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
 
 def draw(
@@ -460,33 +522,45 @@ def draw(
     frame_idx: int = 0,
     fps: float = 25.0,
     scale: float = 1.0,
-    box_style: str = "corner",
+    box_style: str = "full",
     box_thickness: int = 2,
     corner_length: int = 14,
     show_labels: bool = True,
     show_conf: bool = True,
-    show_track_ids: bool = True,
-    label_scale: float = 0.46,
+    show_track_ids: bool = False,
+    show_scan_window: bool = False,
+    show_banner: bool = True,
+    label_scale: float = 0.44,
 ) -> np.ndarray:
     """
-    Renders annotated frame containing scan window band, corner boxes, and status banner (PRD Section 23).
+    Renders clean annotated frame without unwanted row lines or cluttered labels (PRD Section 2.1 & 2.2).
+    LIGHT ON: Emerald Green (34, 197, 94)
+    LIGHT OFF: Crimson Red (239, 68, 68)
+    Label format: 'LIGHT ON · 94%' / 'LIGHT OFF · 91%'
     """
     out_w = int(round(frame.shape[1] * scale))
     out_h = int(round(frame.shape[0] * scale))
     out = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_AREA) if scale != 1.0 else frame.copy()
     y1, y2 = int(round(band[0] * scale)), int(round(band[1] * scale))
 
-    # Scan window guideline indicators (clean HUD styling without washing out the video or red boxes)
-    cv2.line(out, (0, y1), (out.shape[1], y1), (0, 140, 255), 1, cv2.LINE_AA)
-    cv2.line(out, (0, y2), (out.shape[1], y2), (0, 140, 255), 1, cv2.LINE_AA)
+    # Scan window guideline indicators (only if explicitly enabled; disabled by default to remove row lines)
+    if show_scan_window:
+        cv2.line(out, (0, y1), (out.shape[1], y1), (0, 140, 255), 1, cv2.LINE_AA)
+        cv2.line(out, (0, y2), (out.shape[1], y2), (0, 140, 255), 1, cv2.LINE_AA)
 
     counts = {0: 0, 1: 0}
     for det in detections:
         cls = det.get("class_id", 0)
         counts[cls] = counts.get(cls, 0) + 1
 
-        # All detected objects highlighted with clear RED bounding boxes per user requirement
-        box_color = (0, 0, 255)  # Bright Red in BGR
+        # Clear, distinct visual representation (PRD Section 2.3)
+        state_str = str(det.get("slot_status", det.get("state", "OFF" if cls == 0 else "ON"))).upper()
+        if cls == 1 or "ON" in state_str:
+            box_color = (94, 197, 34)   # Emerald Green in BGR (RGB: 34, 197, 94)
+            display_class = "LIGHT ON"
+        else:
+            box_color = (68, 68, 239)   # Crimson Red in BGR (RGB: 239, 68, 68)
+            display_class = "LIGHT OFF"
 
         box = det.get("xyxy")
         if box is None:
@@ -503,24 +577,37 @@ def draw(
         else:
             cv2.rectangle(out, (x1, by1), (x2, by2), box_color, max(2, box_thickness), cv2.LINE_AA)
 
-        lid = det.get("light_id")
-        lid_prefix = f"{lid} | " if lid else ""
-        label_conf = det.get("display_conf", det.get("conf", 0.0))
+        label_conf = float(det.get("display_conf", det.get("conf", 0.0)))
+        conf_pct = int(round(label_conf * 100))
         track_suffix = f" #{det['track_id']}" if show_track_ids and "track_id" in det else ""
-        inferred_suffix = "*" if det.get("inferred") else ""
-        state_str = det.get("slot_status", det.get("state", "OFF" if cls == 0 else "ON"))
-        label = f"{lid_prefix}{state_str}{inferred_suffix}{track_suffix} {label_conf:.2f}" if show_conf else f"{lid_prefix}{state_str}{inferred_suffix}{track_suffix}"
+
+        # Clean, concise prediction label format (PRD Section 2.2): "LIGHT ON · 94%" or "LIGHT OFF · 91%"
+        if show_conf:
+            label = f"{display_class}{track_suffix} · {conf_pct}%"
+        else:
+            label = f"{display_class}{track_suffix}"
 
         if show_labels:
-            put_label(out, label, x1, max(20, by1 - 6), box_color, label_scale)
+            put_label(out, label, x1, by1, box_color, label_scale, y2=by2)
 
-    time_sec = frame_idx / max(1.0, fps)
-    banner_text = (
-        f"YOLOv11 Runway Light | frame {frame_idx} | t={time_sec:.2f}s | "
-        f"ON: {counts.get(1, 0)} | OFF: {counts.get(0, 0)}"
-    )
-    cv2.rectangle(out, (0, 0), (min(out.shape[1], 1000), 40), (18, 18, 18), -1)
-    cv2.putText(out, banner_text, (18, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (245, 245, 245), 2, cv2.LINE_AA)
+    if show_banner:
+        on_cnt = counts.get(1, 0)
+        off_cnt = counts.get(0, 0)
+        banner_text = f"RUNWAY LIGHT DETECTION  |  LIGHT ON: {on_cnt}  |  LIGHT OFF: {off_cnt}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.44
+        thickness = 1
+        (tw, th), bl = cv2.getTextSize(banner_text, font, font_scale, thickness)
+        bx1, by1 = 12, 10
+        bx2, by2 = 12 + tw + 20, 10 + th + 14
+
+        # Semi-transparent sleek dark pill background
+        overlay = out.copy()
+        cv2.rectangle(overlay, (bx1, by1), (bx2, by2), (20, 24, 30), -1)
+        cv2.addWeighted(overlay, 0.75, out, 0.25, 0, out)
+        cv2.rectangle(out, (bx1, by1), (bx2, by2), (55, 65, 80), 1, cv2.LINE_AA)
+        cv2.putText(out, banner_text, (bx1 + 10, by1 + th + 6), font, font_scale, (240, 243, 246), thickness, cv2.LINE_AA)
+
     return out
 
 
@@ -536,6 +623,8 @@ class RunwayLightSlot:
         column_id: int,
         track_id: Optional[int] = None,
         bbox: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
+        initial_state: str = "ON",
+        initial_conf: float = 0.50,
     ):
         self.light_id = light_id  # e.g., "R1-C1"
         self.row_id = row_id
@@ -549,9 +638,20 @@ class RunwayLightSlot:
         self.observations: List[Tuple[int, str, float]] = []
         self.consecutive_off: int = 0
         self.consecutive_on: int = 0
-        self.confirmed_state: str = "UNKNOWN"  # "ON" | "OFF" | "UNKNOWN"
-        self.is_confirmed_fault: bool = False
-        self.confidence: float = 0.0
+
+        # Eliminate "UNKNOWN" - Slot status strictly aligns with model classes: "ON" or "OFF"
+        is_init_off = (initial_state in ("OFF", "OFF-GAP") or "OFF" in str(initial_state).upper() or str(initial_state) == "0")
+        self.confirmed_state: str = "OFF" if is_init_off else "ON"
+        if is_init_off:
+            self.consecutive_off = 1
+            self.consecutive_on = 0
+            self.is_confirmed_fault = (initial_conf >= 0.60)
+        else:
+            self.consecutive_on = 1
+            self.consecutive_off = 0
+            self.is_confirmed_fault = False
+
+        self.confidence: float = float(initial_conf)
         self.total_observations: int = 0
 
     def update(
@@ -572,9 +672,8 @@ class RunwayLightSlot:
         self.observations.append((frame_idx, state, conf))
 
         # Multi-frame temporal validation (LIGHT_FAULT_CONFIRM_FRAMES = 5)
-        # Note: missing observation != OFF
-        is_off_obs = (state in ("OFF", "OFF-GAP") or "OFF" in state.upper())
-        is_on_obs = (state == "ON" or "ON" in state.upper())
+        is_off_obs = (state in ("OFF", "OFF-GAP") or "OFF" in str(state).upper() or str(state) == "0")
+        is_on_obs = (state == "ON" or "ON" in str(state).upper() or str(state) == "1")
 
         if is_off_obs:
             self.consecutive_off += 1
@@ -582,22 +681,13 @@ class RunwayLightSlot:
             if self.consecutive_off >= LIGHT_FAULT_CONFIRM_FRAMES:
                 self.confirmed_state = "OFF"
                 self.is_confirmed_fault = True
-            elif self.confirmed_state == "UNKNOWN":
-                if conf >= 0.40:
-                    self.confirmed_state = "OFF"
+            elif conf >= 0.35:
+                self.confirmed_state = "OFF"
         elif is_on_obs:
             self.consecutive_on += 1
             self.consecutive_off = 0
-            if self.consecutive_on >= 2:
-                self.confirmed_state = "ON"
-                self.is_confirmed_fault = False
-            elif self.confirmed_state == "UNKNOWN":
-                if conf >= 0.35:
-                    self.confirmed_state = "ON"
-        else:
-            # Ambiguous observation does not increment consecutive_off
-            if self.confirmed_state == "UNKNOWN":
-                self.confirmed_state = "UNKNOWN"
+            self.confirmed_state = "ON"
+            self.is_confirmed_fault = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -818,12 +908,16 @@ class RunwayGridTracker:
                         light_id = f"R{row_num}-C{col_num}"
 
                     if light_id not in self.slots:
+                        init_state = det.get("state", "OFF" if det.get("class_id") == 0 else "ON")
+                        init_conf = float(det.get("display_conf", det.get("conf", 0.50)))
                         self.slots[light_id] = RunwayLightSlot(
                             light_id=light_id,
                             row_id=row_num,
                             column_id=col_num,
                             track_id=track_id,
-                            bbox=det["xyxy"]
+                            bbox=det["xyxy"],
+                            initial_state=init_state,
+                            initial_conf=init_conf,
                         )
                     slot = self.slots[light_id]
                     if track_id is not None:
@@ -940,6 +1034,16 @@ class ByteTrackLite:
                 iou = box_iou(track["xyxy"], det["xyxy"])
                 if iou >= self.match_iou:
                     candidates.append((iou, ti, di))
+                else:
+                    # Spatial proximity fallback for small runway light fixtures (PRD Section 17 & 21)
+                    tx1, ty1, tx2, ty2 = track["xyxy"]
+                    dx1, dy1, dx2, dy2 = det["xyxy"]
+                    tcx, tcy = (tx1 + tx2) / 2.0, (ty1 + ty2) / 2.0
+                    dcx, dcy = (dx1 + dx2) / 2.0, (dy1 + dy2) / 2.0
+                    dist = ((tcx - dcx) ** 2 + (tcy - dcy) ** 2) ** 0.5
+                    if dist <= 12.0:
+                        synth_iou = max(0.20, 1.0 - (dist / 16.0))
+                        candidates.append((synth_iou, ti, di))
         for _, ti, di in sorted(candidates, reverse=True):
             if ti in used_tracks or di in used_dets:
                 continue
@@ -1359,8 +1463,10 @@ class RunwayLightService:
         frame_idx: int = 0,
         fps: float = 25.0,
         scale: float = 1.0,
+        show_scan_window: Optional[bool] = None,
+        show_banner: Optional[bool] = None,
     ) -> np.ndarray:
-        """Draws visual HUD overlay on frame (PRD Section 23)."""
+        """Draws clean visual overlay on frame (PRD Section 2)."""
         dets = detections if detections is not None else self.last_detections
         b = band if band is not None else self.last_band
         if b == (0, 0):
@@ -1378,6 +1484,8 @@ class RunwayLightService:
             show_labels=settings.RUNWAY_SHOW_LABELS,
             show_conf=settings.RUNWAY_SHOW_CONF,
             show_track_ids=settings.RUNWAY_SHOW_TRACK_IDS,
+            show_scan_window=show_scan_window if show_scan_window is not None else settings.RUNWAY_SHOW_SCAN_WINDOW,
+            show_banner=show_banner if show_banner is not None else settings.RUNWAY_SHOW_BANNER,
         )
 
 

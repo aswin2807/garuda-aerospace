@@ -14,6 +14,8 @@ from backend.app.services.alert_service import alert_service
 from backend.app.services.tracking_service import tracking_service
 from backend.app.services.detection_aggregator import detection_aggregator
 from backend.app.services.database_service import database_service
+from backend.app.services.debris_coordinate_service import debris_coordinate_service
+from backend.app.services.runway_roi_service import runway_roi_service
 
 class FrameProcessor:
     """
@@ -92,14 +94,23 @@ class FrameProcessor:
         if runway_enabled is not None:
             self.runway_enabled = runway_enabled
 
-    def draw_annotations(self, frame: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
+    def draw_annotations(self, frame: np.ndarray, detections: List[Dict[str, Any]], camera_id: Optional[str] = None) -> np.ndarray:
         """
-        Renders bounding boxes with labels, confidences, and track IDs onto a frame copy.
+        Renders bounding boxes with labels, confidences, track IDs, and Runway Pathway ROI overlay onto a frame copy.
         """
         if frame is None or frame.size == 0:
             return frame
         out = frame.copy()
         h, w = out.shape[:2]
+
+        # Draw active Runway Pathway ROI boundary overlay for FOD
+        if self.fod_enabled:
+            out = runway_roi_service.draw_pathway_overlay(
+                out,
+                camera_id=camera_id or "drone-01",
+                alpha=0.08,
+                draw_label=True
+            )
 
         for d in detections:
             x1, y1, x2, y2 = 0, 0, 0, 0
@@ -118,33 +129,44 @@ class FrameProcessor:
 
             cls_name = str(d.get("class_name", "OBJ")).upper()
             model_type = d.get("model", "")
+            state = str(d.get("state", "")).upper()
             conf = float(d.get("confidence", 0.0))
-            tid = d.get("track_id")
+            conf_pct = int(round(conf * 100))
 
-            # Determine color and label
-            if "LIGHT ON" in cls_name or d.get("state") == "ON":
-                color = (0, 255, 0)      # Green
-                label_txt = f"LIGHT ON {int(conf * 100)}%"
-            elif "LIGHT OFF" in cls_name or d.get("state") in ("OFF", "OFF-GAP"):
-                color = (0, 69, 255)    # Orange/Red
-                label_txt = f"LIGHT OFF {int(conf * 100)}%"
+            # Distinguish LIGHT ON (Emerald Green) from LIGHT OFF (Crimson Red) (PRD Section 2.3)
+            if "LIGHT ON" in cls_name or state == "ON":
+                color = (94, 197, 34)      # Emerald Green in BGR (RGB: 34, 197, 94)
+                label_txt = f"LIGHT ON · {conf_pct}%"
+            elif "LIGHT OFF" in cls_name or state in ("OFF", "OFF-GAP"):
+                color = (68, 68, 239)      # Crimson Red in BGR (RGB: 239, 68, 68)
+                label_txt = f"LIGHT OFF · {conf_pct}%"
             elif "FOD" in cls_name or model_type == "fod":
-                color = (0, 0, 255)      # Red
-                label_txt = f"FOD {int(conf * 100)}%"
+                color = (0, 0, 255)        # Red in BGR for FOD
+                label_txt = f"FOD · {conf_pct}%"
             else:
-                color = (255, 200, 0)    # Cyan
-                label_txt = f"{cls_name} {int(conf * 100)}%"
+                color = (255, 180, 0)      # Aviation Amber
+                label_txt = f"{cls_name} · {conf_pct}%"
 
-            if tid is not None:
-                label_txt += f" #{tid}"
+            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
 
-            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-            # Label background badge
-            (tw, th), _ = cv2.getTextSize(label_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            by1 = max(0, y1 - th - 6)
-            by2 = y1
-            cv2.rectangle(out, (x1, by1), (x1 + tw + 6, by2), color, -1)
-            cv2.putText(out, label_txt, (x1 + 3, y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+            # Clean label badge with smart placement (PRD Section 2.2)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.44
+            (tw, th), bl = cv2.getTextSize(label_txt, font, font_scale, 1)
+            pill_h = th + bl + 6
+            pill_w = tw + 8
+
+            if y1 - pill_h >= 2:
+                by1 = y1 - pill_h - 2
+            else:
+                by1 = min(h - pill_h - 2, y2 + 2)
+            bx1 = max(2, min(x1, w - pill_w - 2))
+            by2 = by1 + pill_h
+            bx2 = bx1 + pill_w
+
+            cv2.rectangle(out, (bx1, by1), (bx2, by2), color, -1)
+            cv2.rectangle(out, (bx1, by1), (bx2, by2), (18, 18, 18), 1, cv2.LINE_AA)
+            cv2.putText(out, label_txt, (bx1 + 4, by1 + th + 3), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
 
         return out
 
@@ -190,10 +212,34 @@ class FrameProcessor:
                 self.navigation_detections += len(self._last_nav_dets)
             all_dets.extend(self._last_nav_dets)
 
-        # 2. FOD Model Inference (Scheduled)
+        # 2. FOD Model Inference (Scheduled with Runway Pathway ROI Filtering)
         if self.fod_enabled and fod_service.loaded:
             if current_frame_id == 1 or (current_frame_id % self.fod_every_n == 0):
-                self._last_fod_dets = fod_service.predict(frame, conf=fod_conf, iou=iou_thresh)
+                raw_fod = fod_service.predict(
+                    frame,
+                    conf=fod_conf,
+                    iou=iou_thresh,
+                    filter_pathway=True,
+                    camera_id=camera_id,
+                    source_id=sess_id
+                )
+                # Compute ground coordinates for each FOD detection (FR-03, FR-04, FR-05)
+                h_f, w_f = frame.shape[:2]
+                for d in raw_fod:
+                    coords = debris_coordinate_service.predict_coordinates(
+                        bbox=d.get("bbox") or d.get("xyxy"),
+                        image_width=w_f,
+                        image_height=h_f,
+                        telemetry=getattr(self, "telemetry", None)
+                    )
+                    d["debris_coordinates"] = coords
+                    d["latitude"] = coords.get("latitude")
+                    d["longitude"] = coords.get("longitude")
+                    d["coordinate_uncertainty_m"] = coords.get("uncertainty_m")
+                    d["coordinate_status"] = coords.get("status")
+                    d["coordinate_method"] = coords.get("method")
+                    d["coordinate_formatted"] = coords.get("formatted")
+                self._last_fod_dets = raw_fod
                 self.fod_inferences += 1
                 self.fod_detections += len(self._last_fod_dets)
             all_dets.extend(self._last_fod_dets)
@@ -233,7 +279,7 @@ class FrameProcessor:
 
         # 7. Generate Annotated Visual Frame with Bounding Boxes (if requested)
         if return_annotated:
-            payload["annotated_frame"] = self.draw_annotations(frame, tracked_dets)
+            payload["annotated_frame"] = self.draw_annotations(frame, tracked_dets, camera_id=camera_id)
 
         # 8. Database Persistence (PRD Section 15, 16, 39)
         if sess_id:

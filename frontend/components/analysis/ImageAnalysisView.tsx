@@ -4,6 +4,8 @@ import React, { useState } from "react";
 import { useAnalysisStore } from "../../stores/analysisStore";
 import { useAnalysis } from "../../hooks/useAnalysis";
 import { UploadMedia } from "./UploadMedia";
+import { DebrisLocationMapModal } from "./DebrisLocationMapModal";
+import { MapPin } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -16,6 +18,7 @@ export const ImageAnalysisView: React.FC = () => {
 
   const { start, loading, error } = useAnalysis();
   const [activeTab, setActiveTab] = useState<"annotated" | "original">("annotated");
+  const [selectedDebrisForMap, setSelectedDebrisForMap] = useState<any | null>(null);
 
   const analysisType = useAnalysisStore((s) => s.analysisType);
 
@@ -196,9 +199,9 @@ export const ImageAnalysisView: React.FC = () => {
                     </div>
                   </div>
                   <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded p-2 text-center">
-                    <div className="text-[9px] text-[#5B6472] uppercase font-bold">Unknown / Gaps</div>
-                    <div className="text-base font-bold text-amber-500 mt-0.5">
-                      {results.unknown_light_count ?? 0}
+                    <div className="text-[9px] text-[#5B6472] uppercase font-bold">Total Lights</div>
+                    <div className="text-base font-bold text-[#111827] mt-0.5">
+                      {(results.light_on_count ?? 0) + (results.light_off_count ?? 0)}
                     </div>
                   </div>
                 </div>
@@ -207,32 +210,80 @@ export const ImageAnalysisView: React.FC = () => {
               {/* Detected Objects Table */}
               {results.sample_detections && results.sample_detections.length > 0 && (
                 <div className="bg-[#FFFFFF] border border-[#D9DEE7] rounded-lg p-3">
-                  <div className="text-xs font-bold text-[#111827] uppercase mb-2">
-                    Detected Entities ({results.sample_detections.length})
+                  <div className="text-xs font-bold text-[#111827] uppercase mb-2 flex items-center justify-between">
+                    <span>Detected Entities ({results.sample_detections.length})</span>
+                    {atype === "FOD" && (
+                      <span className="text-[10px] text-red-600 font-bold uppercase">
+                        ROD Debris Spatial Geolocation Active
+                      </span>
+                    )}
                   </div>
-                  <div className="max-h-48 overflow-y-auto">
+                  <div className="max-h-60 overflow-y-auto">
                     <table className="w-full text-left text-xs font-mono">
                       <thead>
                         <tr className="text-[#5B6472] border-b border-[#D9DEE7]">
-                          <th className="py-1">Model</th>
-                          <th className="py-1">Class</th>
-                          <th className="py-1">Confidence</th>
-                          <th className="py-1">Coordinates [x1, y1, x2, y2]</th>
+                          <th className="py-1.5 px-2">Model</th>
+                          <th className="py-1.5 px-2">Class</th>
+                          <th className="py-1.5 px-2">Confidence</th>
+                          <th className="py-1.5 px-2">Bounding Box</th>
+                          <th className="py-1.5 px-2">Debris Coordinates</th>
+                          <th className="py-1.5 px-2 text-right">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#D9DEE7]">
-                        {results.sample_detections.map((det: any, i: number) => (
-                          <tr key={i} className="text-[#111827] hover:bg-[#F0F6FF]">
-                            <td className="py-1 uppercase text-[#5B6472] text-[10px]">{det.model || "yolo"}</td>
-                            <td className="py-1 font-bold text-[#0066FF]">{det.class_name}</td>
-                            <td className="py-1 text-[#0066FF]">{(det.confidence * 100).toFixed(1)}%</td>
-                            <td className="py-1 text-[#5B6472] font-mono text-[10px]">
-                              {Array.isArray(det.bbox)
-                                ? `[${det.bbox.map((v: number) => Math.round(v)).join(", ")}]`
-                                : JSON.stringify(det.bbox)}
-                            </td>
-                          </tr>
-                        ))}
+                        {results.sample_detections.map((det: any, i: number) => {
+                          const coords = det.debris_coordinates;
+                          const lat = coords?.latitude ?? det.latitude;
+                          const lon = coords?.longitude ?? det.longitude;
+                          const unc = coords?.uncertainty_m ?? det.coordinate_uncertainty_m;
+                          const st = (coords?.status ?? det.coordinate_status ?? "unavailable").toLowerCase();
+                          const hasCoords = typeof lat === "number" && typeof lon === "number" && !isNaN(lat) && !isNaN(lon) && st !== "unavailable";
+
+                          return (
+                            <tr key={i} className="text-[#111827] hover:bg-[#F0F6FF]">
+                              <td className="py-2 px-2 uppercase text-[#5B6472] text-[10px]">{det.model || "yolo"}</td>
+                              <td className="py-2 px-2 font-bold text-[#0066FF]">{det.class_name}</td>
+                              <td className="py-2 px-2 text-[#0066FF]">{(det.confidence * 100).toFixed(1)}%</td>
+                              <td className="py-2 px-2 text-[#5B6472] font-mono text-[10px]">
+                                {Array.isArray(det.bbox)
+                                  ? `[${det.bbox.map((v: number) => Math.round(v)).join(", ")}]`
+                                  : JSON.stringify(det.bbox)}
+                              </td>
+                              <td className="py-2 px-2 text-[11px]">
+                                {hasCoords ? (
+                                  <div className="flex items-center space-x-1.5">
+                                    <span className="font-bold text-[#111827]">
+                                      {lat.toFixed(5)}°, {lon.toFixed(5)}°
+                                    </span>
+                                    <span
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${
+                                        st === "verified"
+                                          ? "bg-emerald-50 text-emerald-700 border-emerald-300"
+                                          : "bg-sky-50 text-[#0066FF] border-sky-300"
+                                      }`}
+                                    >
+                                      ±{(unc ?? 1.5).toFixed(1)}m
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-[#5B6472] italic text-[10px]">
+                                    {coords?.formatted || "Unavailable"}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2 px-2 text-right">
+                                <button
+                                  onClick={() => setSelectedDebrisForMap(det)}
+                                  className="px-2 py-0.5 rounded text-[10px] bg-[#F5F7FA] hover:bg-[#EAF3FF] hover:text-[#0066FF] border border-[#D9DEE7] text-[#5B6472] font-semibold inline-flex items-center space-x-1"
+                                  title="View on Map"
+                                >
+                                  <MapPin className="w-3 h-3 text-[#0066FF]" />
+                                  <span>Map</span>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -246,6 +297,14 @@ export const ImageAnalysisView: React.FC = () => {
               {error}
             </div>
           )}
+
+          {/* Reusable Debris Location Map Modal (FR-08) */}
+          <DebrisLocationMapModal
+            isOpen={!!selectedDebrisForMap}
+            onClose={() => setSelectedDebrisForMap(null)}
+            detection={selectedDebrisForMap}
+            droneTelemetry={results.drone_telemetry}
+          />
         </div>
       )}
     </div>

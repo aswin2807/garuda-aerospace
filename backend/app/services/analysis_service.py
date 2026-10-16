@@ -265,6 +265,12 @@ class AnalysisService:
                         j.row_results = json.dumps(counts.get("row_results", []))
                     db.commit()
 
+                    try:
+                        from backend.app.services.central_results_service import central_results_service
+                        central_results_service.sync_analysis_job_to_central_result(job_id)
+                    except Exception as ex_sync:
+                        logger.error(f"[ANALYSIS_SERVICE] Error syncing image job to central results: {ex_sync}")
+
             return {
                 "id": job_id,
                 "job_id": job_id,
@@ -490,23 +496,83 @@ class AnalysisService:
                     row_res = []
 
             # Sample detections filtered by job_id and model/analysis_type
-            query = db.query(Detection).filter(Detection.job_id == job_id)
+            query = db.query(Detection).filter((Detection.job_id == job_id) | (Detection.session_id == job_id))
             if atype in ("NAVIGATION", "FOD", "RUNWAY_LIGHT"):
                 query = query.filter(Detection.analysis_type == atype)
-            sample_dets = query.limit(50).all()
+            sample_dets = query.order_by(Detection.frame_number.asc()).limit(500).all()
 
-            formatted_sample = [
-                {
-                    "frame": d.frame_number,
+            fps = max(1.0, float(job.video_fps or 30.0))
+            formatted_sample = []
+            for d in sample_dets:
+                frame_num = int(d.frame_number or 0)
+                ts_sec = round(frame_num / fps, 2)
+                mins = int(ts_sec // 60)
+                secs = int(ts_sec % 60)
+                tenths = int(round((ts_sec % 1) * 10)) % 10
+                ts_fmt = f"{mins:02d}:{secs:02d}.{tenths:01d}"
+
+                is_fod = (d.analysis_type or atype) in ("FOD", "FOD_DEBRIS")
+                coords = None
+                if is_fod:
+                    coords = {
+                        "latitude": d.latitude,
+                        "longitude": d.longitude,
+                        "crs": d.coordinate_crs or "WGS84",
+                        "uncertainty_m": d.coordinate_uncertainty_m,
+                        "status": d.coordinate_status or "unavailable",
+                        "method": d.coordinate_method or "none",
+                        "formatted": d.coordinate_formatted or (
+                            "Coordinates unavailable"
+                            if d.latitude is None
+                            else f"{abs(d.latitude):.6f}° {'N' if d.latitude >= 0 else 'S'}, {abs(d.longitude):.6f}° {'E' if d.longitude >= 0 else 'W'}"
+                        ),
+                    }
+                formatted_sample.append({
+                    "frame": frame_num,
+                    "timestamp_seconds": ts_sec,
+                    "timestamp_formatted": ts_fmt,
                     "model": d.model_name,
                     "analysis_type": d.analysis_type or atype,
                     "class_name": d.class_name,
                     "confidence": d.confidence,
                     "bbox": [d.x1, d.y1, d.x2, d.y2],
                     "track_id": d.track_id,
-                }
-                for d in sample_dets
-            ]
+                    "debris_coordinates": coords,
+                    "latitude": d.latitude,
+                    "longitude": d.longitude,
+                    "coordinate_uncertainty_m": d.coordinate_uncertainty_m,
+                    "coordinate_status": d.coordinate_status or "unavailable",
+                    "coordinate_method": d.coordinate_method or "none",
+                    "coordinate_formatted": d.coordinate_formatted or (coords["formatted"] if coords else None),
+                })
+
+            # If formatted_sample is empty for RUNWAY_LIGHT, supplement from RunwayLightResult table
+            if not formatted_sample and atype in ("RUNWAY_LIGHT", "RUNWAY"):
+                from backend.app.services.database_service import database_service
+                rw_dets = database_service.get_runway_light_results(job.id, limit=500)
+                for r in rw_dets:
+                    f_id = int(r.get("frame_id") or 0)
+                    ts_sec = round(float(r.get("timestamp") or (f_id / fps)), 2)
+                    mins = int(ts_sec // 60)
+                    secs = int(ts_sec % 60)
+                    tenths = int(round((ts_sec % 1) * 10)) % 10
+                    ts_fmt = f"{mins:02d}:{secs:02d}.{tenths:01d}"
+
+                    formatted_sample.append({
+                        "frame": f_id,
+                        "timestamp_seconds": ts_sec,
+                        "timestamp_formatted": ts_fmt,
+                        "model": "runway_light",
+                        "analysis_type": "RUNWAY_LIGHT",
+                        "class_name": r.get("class_name") or ("LIGHT ON" if r.get("status") == "ON" else "LIGHT OFF"),
+                        "confidence": float(r.get("confidence") or 0.0),
+                        "bbox": r.get("bbox") or [0, 0, 0, 0],
+                        "track_id": r.get("track_id") or r.get("light_id"),
+                        "status": r.get("status"),
+                        "row_id": r.get("row_id"),
+                        "column_id": r.get("column_id"),
+                        "is_confirmed": r.get("is_confirmed", False),
+                    })
 
             elapsed_m = int(job.elapsed_seconds // 60)
             elapsed_s = int(job.elapsed_seconds % 60)

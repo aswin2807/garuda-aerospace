@@ -1,3 +1,15 @@
+export interface DebrisCoordinates {
+  latitude?: number | null;
+  longitude?: number | null;
+  crs?: string;
+  uncertainty_m?: number | null;
+  status: "estimated" | "verified" | "unavailable" | string;
+  method?: string;
+  formatted?: string;
+  source_note?: string;
+  ground_point_pixels?: [number, number];
+}
+
 export interface DetectionItem {
   model?: "navigation" | "fod" | "runway_light" | string;
   class_id: number;
@@ -9,6 +21,12 @@ export interface DetectionItem {
   bbox: [number, number, number, number] | { x1: number; y1: number; x2: number; y2: number };
   bbox_xywh?: [number, number, number, number];
   bbox_dict?: { x1: number; y1: number; x2: number; y2: number };
+  debris_coordinates?: DebrisCoordinates | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  coordinate_uncertainty_m?: number | null;
+  coordinate_status?: string;
+  coordinate_formatted?: string;
 }
 
 export interface ImageQuality {
@@ -83,8 +101,30 @@ export type CameraStatus =
   | "RECONNECTING"
   | "ERROR";
 
+export interface PreLandingSummary {
+  flight_id: string;
+  camera_id?: string;
+  flight_status: "FLYING" | "ANALYSIS_ACTIVE" | "COMPLETED" | "ERROR" | string;
+  camera_status: CameraStatus | string;
+  summary_status: "READY" | "PENDING" | string;
+  total_unique_objects: number;
+  light_on_count: number;
+  light_off_count: number;
+  min_confidence: number;
+  avg_confidence: number;
+  max_confidence: number;
+  frames_analyzed: number;
+  flight_duration_sec: number;
+  first_detection_time?: string | null;
+  last_detection_time?: string | null;
+  latest_detected_object?: string | null;
+  latest_confidence?: number | null;
+  model?: string;
+}
+
 export interface CameraConnectParams {
   rtsp_url?: string;
+  flight_id?: string;
   ip?: string;
   port?: number;
   protocol?: "RTSP" | "HTTP" | "HTTPS" | "MJPEG" | "WEBCAM";
@@ -100,6 +140,8 @@ export interface CameraConnectParams {
 export interface CameraConnectResponse {
   success: boolean;
   camera_id: string;
+  flight_id?: string;
+  flight_status?: string;
   status: CameraStatus | string;
   message?: string;
   stream_url?: string;
@@ -110,6 +152,8 @@ export interface CameraConnectResponse {
 export interface CameraStatusResponse {
   camera_id: string;
   camera_name?: string;
+  flight_id?: string | null;
+  flight_status?: string | null;
   status: CameraStatus | string;
   width?: number;
   height?: number;
@@ -124,9 +168,35 @@ export interface CameraStatusResponse {
   detections: DetectionItem[];
   alerts?: AlertItem[];
   summary?: DetectionSummary;
+  latest_detected_object?: string | null;
+  latest_confidence?: number | null;
+  last_detection_time?: string | null;
+  frames_analyzed?: number;
+  pre_landing_summary?: PreLandingSummary | null;
   model?: string;
   stream_url?: string;
   error?: string | null;
+}
+
+export interface FlightCompleteResponse {
+  success: boolean;
+  camera_id: string;
+  flight_id: string;
+  flight_status: string;
+  summary_status: string;
+  summary: PreLandingSummary;
+}
+
+export type FlightSummaryResponse = PreLandingSummary;
+
+export interface CameraDisconnectResponse {
+  success: boolean;
+  camera_id: string;
+  flight_id?: string | null;
+  flight_status?: string | null;
+  status: string;
+  message: string;
+  pre_landing_summary?: PreLandingSummary | null;
 }
 
 export interface ModelItem {
@@ -165,13 +235,6 @@ export interface ModelSelectResponse {
   status: string;
   message: string;
   classes?: Record<string, string>;
-}
-
-export interface CameraDisconnectResponse {
-  success: boolean;
-  camera_id: string;
-  status: string;
-  message: string;
 }
 
 export interface CameraListItem {

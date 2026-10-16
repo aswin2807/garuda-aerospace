@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.orm import relationship
 from backend.app.db.database import Base
 
@@ -19,8 +19,67 @@ class User(Base):
     name = Column(String(150), nullable=False)
     role = Column(String(50), default="OPERATOR")  # ADMIN, OPERATOR, VIEWER
     is_active = Column(Boolean, default=True)
+    is_email_verified = Column(Boolean, default=True)
+    account_status = Column(String(50), default="ACTIVE")  # ACTIVE, DISABLED
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+    session_invalidated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=get_utc_now)
     updated_at = Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)
+
+    password_resets = relationship("PasswordReset", back_populates="user", cascade="all, delete-orphan")
+    email_verifications = relationship("EmailVerification", back_populates="user", cascade="all, delete-orphan")
+
+    @property
+    def full_name(self) -> str:
+        return self.name
+
+    @full_name.setter
+    def full_name(self, value: str) -> None:
+        self.name = value
+
+
+class EmailVerification(Base):
+    """
+    Email verification tokens for activating newly registered user accounts.
+    """
+    __tablename__ = "email_verifications"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)  # SHA-256 hex
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
+    user = relationship("User", back_populates="email_verifications")
+
+
+class PasswordReset(Base):
+    """
+    Password reset tokens for secure authentication recovery.
+    """
+    __tablename__ = "password_resets"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)  # SHA-256 hex
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
+    user = relationship("User", back_populates="password_resets")
+
+
+class RevokedToken(Base):
+    """
+    Revoked JWT session tokens invalidated on logout.
+    """
+    __tablename__ = "revoked_tokens"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    revoked_at = Column(DateTime(timezone=True), default=get_utc_now)
+
 
 class Drone(Base):
     __tablename__ = "drones"
@@ -85,6 +144,14 @@ class Detection(Base):
     frame_number = Column(Integer, default=0)
     timestamp = Column(DateTime(timezone=True), default=get_utc_now)
     image_url = Column(String(512), nullable=True)
+    # Debris Geographical Coordinates (FR-01, FR-06, FR-10)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    coordinate_uncertainty_m = Column(Float, nullable=True)
+    coordinate_status = Column(String(50), nullable=True, default="unavailable")
+    coordinate_method = Column(String(100), nullable=True)
+    coordinate_crs = Column(String(50), nullable=True, default="WGS84")
+    coordinate_formatted = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), default=get_utc_now)
 
     drone = relationship("Drone", back_populates="detections")
@@ -313,3 +380,146 @@ class RunwayLightSummary(Base):
     created_at = Column(DateTime(timezone=True), default=get_utc_now)
     updated_at = Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)
 
+
+# ==============================================================================
+# CENTRALIZED DATABASE MODELS (PRD: Centralized Results Management System)
+# ==============================================================================
+
+def generate_result_id():
+    return f"res_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
+
+def generate_event_id():
+    return f"evt_{uuid.uuid4().hex[:12]}"
+
+def generate_media_id():
+    return f"med_{uuid.uuid4().hex[:12]}"
+
+def generate_surveillance_session_id():
+    return f"SES-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+
+def generate_audit_id():
+    return f"aud_{uuid.uuid4().hex[:12]}"
+
+
+class AnalysisResult(Base):
+    """
+    Centralized analysis result table for all modules (PRD Section 5 Table 1).
+    Stores results from: navigation, rod_debris / fod_debris, runway_lights,
+    live_surveillance, and offline_surveillance.
+    """
+    __tablename__ = "analysis_results"
+
+    id = Column(String(64), primary_key=True, default=generate_result_id)
+    module_type = Column(String(50), nullable=False, index=True)  # navigation, rod_debris, runway_lights, live_surveillance, offline_surveillance
+    session_id = Column(String(100), index=True, nullable=True)
+    title = Column(String(255), nullable=False)
+    status = Column(String(50), default="queued", index=True, nullable=False)  # queued, processing, completed, failed
+    summary = Column(Text, nullable=True)
+    result_data = Column(JSON, nullable=True)  # Structured module-specific metrics, counts, etc.
+    started_at = Column(DateTime(timezone=True), default=get_utc_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now, index=True)
+    updated_at = Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)
+    media_reference = Column(String(512), nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    events = relationship("DetectionEvent", back_populates="result", cascade="all, delete-orphan")
+    media_assets = relationship("MediaAsset", back_populates="result", cascade="all, delete-orphan")
+
+
+class DetectionEvent(Base):
+    """
+    Granular detection events associated with an analysis result (PRD Section 5 Table 2).
+    """
+    __tablename__ = "detection_events"
+
+    id = Column(String(64), primary_key=True, default=generate_event_id)
+    analysis_result_id = Column(String(64), ForeignKey("analysis_results.id"), index=True, nullable=False)
+    event_type = Column(String(100), nullable=False, index=True)  # OBSTACLE, FOD_DETECTED, LIGHT_ON, LIGHT_OFF, FAULT, MOTION, etc.
+    class_name = Column(String(100), nullable=False, index=True)
+    confidence = Column(Float, nullable=True)
+    timestamp = Column(DateTime(timezone=True), default=get_utc_now, index=True)
+    video_timestamp = Column(Float, nullable=True)  # Timestamp offset in seconds within video
+    location_data = Column(JSON, nullable=True)     # Bounding box [x1, y1, x2, y2] or coordinates
+    event_data = Column(JSON, nullable=True)        # Additional event metadata
+
+    result = relationship("AnalysisResult", back_populates="events")
+
+
+class MediaAsset(Base):
+    """
+    Associated media assets (images, videos, reports) for an analysis result (PRD Section 5 Table 3).
+    """
+    __tablename__ = "media_assets"
+
+    id = Column(String(64), primary_key=True, default=generate_media_id)
+    analysis_result_id = Column(String(64), ForeignKey("analysis_results.id"), index=True, nullable=False)
+    media_type = Column(String(50), nullable=False)  # image, video, report
+    storage_key = Column(String(512), nullable=False)
+    file_name = Column(String(255), nullable=False)
+    file_size = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+
+    result = relationship("AnalysisResult", back_populates="media_assets")
+
+
+class SurveillanceSessionRecord(Base):
+    """
+    Surveillance sessions tracking live or offline surveillance operations (PRD Section 5 Table 4).
+    """
+    __tablename__ = "surveillance_sessions"
+
+    id = Column(String(100), primary_key=True, default=generate_surveillance_session_id)
+    mode = Column(String(50), nullable=False, index=True)  # live, offline
+    camera_id = Column(String(100), nullable=True, index=True)
+    source_reference = Column(String(512), nullable=True)
+    started_at = Column(DateTime(timezone=True), default=get_utc_now)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(50), default="active", index=True)  # active, completed, stopped, error
+    metadata_json = Column(JSON, nullable=True)
+
+
+class AuditLog(Base):
+    """
+    Audit log records for tracking critical system and data operations (PRD Section 5 Table 5).
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(String(64), primary_key=True, default=generate_audit_id)
+    user_id = Column(String(64), nullable=True, index=True)
+    action = Column(String(100), nullable=False, index=True)
+    resource_type = Column(String(100), nullable=False, index=True)
+    resource_id = Column(String(100), nullable=True, index=True)
+    details = Column(JSON, nullable=True)
+    timestamp = Column(DateTime(timezone=True), default=get_utc_now, index=True)
+
+
+# ==============================================================================
+# NAVIGATION MODULE & ROUTE PLANNING MODELS (PRD FR-10)
+# ==============================================================================
+
+def generate_route_id():
+    return f"route_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+
+class NavigationRoute(Base):
+    """
+    Persistent drone navigation routes with waypoints (PRD FR-10).
+    """
+    __tablename__ = "navigation_routes"
+
+    id = Column(String(64), primary_key=True, default=generate_route_id)
+    name = Column(String(200), nullable=False)
+    drone_id = Column(String(36), ForeignKey("drones.id"), nullable=True)
+    start_latitude = Column(Float, nullable=False)
+    start_longitude = Column(Float, nullable=False)
+    target_latitude = Column(Float, nullable=False)
+    target_longitude = Column(Float, nullable=False)
+    target_name = Column(String(200), nullable=True)
+    total_distance_m = Column(Float, default=0.0)
+    estimated_time_s = Column(Float, default=0.0)
+    waypoints_json = Column(JSON, nullable=False, default=list)  # list of {order, latitude, longitude, altitude_agl_m, notes}
+    status = Column(String(50), default="PLANNED", index=True)  # PLANNED, ACTIVE, COMPLETED, ARCHIVED
+    created_by = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now, index=True)
+    updated_at = Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)

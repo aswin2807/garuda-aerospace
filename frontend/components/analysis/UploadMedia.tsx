@@ -16,12 +16,38 @@ export const UploadMedia: React.FC<UploadMediaProps> = ({ onUploaded }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [validationError, setValidationError] = useState<string | null>(null);
+
   const isVideoMode = mode === "VIDEO";
   const acceptedTypes = isVideoMode
     ? ".mp4,.mov,.avi,.mkv,.webm"
     : ".jpg,.jpeg,.png,.webp,.bmp";
 
   const handleFile = async (file: File) => {
+    setValidationError(null);
+    const ext = "." + (file.name.split(".").pop() || "").toLowerCase();
+    const allowed = isVideoMode
+      ? [".mp4", ".mov", ".avi", ".mkv", ".webm"]
+      : [".jpg", ".jpeg", ".png", ".webp", ".bmp"];
+
+    if (!allowed.includes(ext)) {
+      setValidationError(`Unsupported file format '${ext}'. Allowed formats: ${allowed.join(", ")}`);
+      return;
+    }
+
+    if (file.size === 0) {
+      setValidationError("The selected file is empty (0 bytes). Please upload a valid recorded video.");
+      return;
+    }
+
+    const maxBytes = 500 * 1024 * 1024; // 500MB limit
+    if (file.size > maxBytes) {
+      setValidationError(
+        `File size (${(file.size / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum limit of 500 MB.`
+      );
+      return;
+    }
+
     try {
       if (isVideoMode) {
         await uploadVideo(file);
@@ -29,8 +55,8 @@ export const UploadMedia: React.FC<UploadMediaProps> = ({ onUploaded }) => {
         await uploadImage(file);
       }
       if (onUploaded) onUploaded();
-    } catch (e) {
-      console.error("Upload error:", e);
+    } catch (e: any) {
+      setValidationError(e.message || "Upload failed. Please check the file and try again.");
     }
   };
 
@@ -61,6 +87,7 @@ export const UploadMedia: React.FC<UploadMediaProps> = ({ onUploaded }) => {
   };
 
   const analysisType = useAnalysisStore((s) => s.analysisType);
+  const activeError = validationError || error;
 
   return (
     <div className="flex flex-col w-full">
@@ -143,9 +170,18 @@ export const UploadMedia: React.FC<UploadMediaProps> = ({ onUploaded }) => {
           <span>{isVideoMode ? "MP4, MOV, AVI, MKV, WEBM" : "JPG, PNG, WEBP, BMP"}</span>
         </div>
 
-        {error && (
-          <div className="mt-4 p-2 bg-red-50 border border-red-200 rounded text-red-600 text-xs font-mono">
-            {error}
+        {activeError && (
+          <div className="mt-4 p-2.5 bg-red-50 border border-red-200 rounded-lg text-red-600 text-xs font-mono flex items-center justify-between">
+            <span>{activeError}</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setValidationError(null);
+              }}
+              className="text-red-700 hover:text-red-900 font-bold ml-2 text-sm"
+            >
+              ✕
+            </button>
           </div>
         )}
       </div>

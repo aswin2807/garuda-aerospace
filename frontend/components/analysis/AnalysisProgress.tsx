@@ -158,39 +158,33 @@ export const AnalysisProgress: React.FC = () => {
         )}
 
         {atype === "RUNWAY_LIGHT" && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
             <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded p-2 text-center">
-              <div className="text-[9px] text-[#5B6472] uppercase">Total Lights</div>
+              <div className="text-[9px] text-[#5B6472] uppercase font-bold">Total Lights</div>
               <div className="text-base font-bold text-[#111827] mt-0.5">
-                {(activeJob.total_lights ?? (light_on_count + light_off_count + (activeJob.unknown_light_count ?? 0))).toLocaleString()}
+                {(activeJob.total_lights ?? (light_on_count + light_off_count)).toLocaleString()}
               </div>
             </div>
             <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded p-2 text-center">
-              <div className="text-[9px] text-[#5B6472] uppercase">Lights Active</div>
+              <div className="text-[9px] text-[#5B6472] uppercase font-bold">Lights Active</div>
               <div className="text-base font-bold text-[#0066FF] mt-0.5">
                 {light_on_count.toLocaleString()}
               </div>
             </div>
             <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded p-2 text-center">
-              <div className="text-[9px] text-[#5B6472] uppercase">Lights Inactive</div>
+              <div className="text-[9px] text-[#5B6472] uppercase font-bold">Lights Inactive</div>
               <div className="text-base font-bold text-[#5B6472] mt-0.5">
                 {light_off_count.toLocaleString()}
               </div>
             </div>
             <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded p-2 text-center">
-              <div className="text-[9px] text-[#5B6472] uppercase">Unknown / Gaps</div>
-              <div className="text-base font-bold text-amber-500 mt-0.5">
-                {(activeJob.unknown_light_count ?? 0).toLocaleString()}
-              </div>
-            </div>
-            <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded p-2 text-center">
-              <div className="text-[9px] text-[#5B6472] uppercase">Confirmed Faults</div>
+              <div className="text-[9px] text-[#5B6472] uppercase font-bold">Confirmed Faults</div>
               <div className="text-base font-bold text-red-500 mt-0.5">
                 {confirmed_faults.toLocaleString()}
               </div>
             </div>
             <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded p-2 text-center">
-              <div className="text-[9px] text-[#5B6472] uppercase">Rows Detected</div>
+              <div className="text-[9px] text-[#5B6472] uppercase font-bold">Rows Detected</div>
               <div className="text-base font-bold text-[#111827] mt-0.5">
                 {(activeJob.rows_detected ?? 0).toLocaleString()}
               </div>

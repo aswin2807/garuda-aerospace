@@ -3,6 +3,9 @@
 import React, { useState } from "react";
 import { useAnalysisStore } from "../../stores/analysisStore";
 import { RunwayGridMatrix } from "../runway/RunwayGridMatrix";
+import { DebrisLocationMapModal } from "./DebrisLocationMapModal";
+import { OfflineVideoReviewWorkspace } from "./OfflineVideoReviewWorkspace";
+import { MapPin, ExternalLink, AlertTriangle } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -12,6 +15,7 @@ export const AnalysisResults: React.FC = () => {
 
   const [isPlayingAnalyzedVideo, setIsPlayingAnalyzedVideo] = useState(false);
   const [showDetectionSamples, setShowDetectionSamples] = useState(false);
+  const [selectedDebrisForMap, setSelectedDebrisForMap] = useState<any | null>(null);
 
   if (!activeJob && !jobResults) return null;
 
@@ -218,6 +222,24 @@ export const AnalysisResults: React.FC = () => {
             </div>
           )}
 
+          {/* Runway Pathway ROI Filter Status (PRD Section 4 & 5) */}
+          <div className="bg-[#F8FAFC] border border-[#CBD5E1] rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center space-x-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="font-bold text-[#111827]">RUNWAY PATHWAY ROI:</span>
+              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
+                ACTIVE · RESTRICTED TO VALID RUNWAY CORRIDOR
+              </span>
+            </div>
+            <div className="flex items-center space-x-3 text-[11px] text-[#475569]">
+              <span>Boundary Rule: <strong className="text-[#0F172A]">{data.roi_info?.boundary_rule || "BOTTOM_CENTER"}</strong></span>
+              <span>In-Pathway Debris: <strong className="text-emerald-700 font-bold">{(data.unique_fod_count ?? data.fod_count ?? 0)}</strong></span>
+              {(data.pathway_filtered_count || data.outside_pathway_filtered) ? (
+                <span>Filtered Out-of-Pathway: <strong className="text-amber-700 font-bold">{data.pathway_filtered_count || data.outside_pathway_filtered}</strong></span>
+              ) : null}
+            </div>
+          </div>
+
           {/* Detailed FOD Metrics Grid */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded-lg p-3">
@@ -287,6 +309,130 @@ export const AnalysisResults: React.FC = () => {
                 {data.avg_inference_ms ? `${data.avg_inference_ms.toFixed(1)} ms / frame` : "--"}
               </span>
             </div>
+          </div>
+
+          {/* ROD Debris Detections & Predicted Coordinates Table (FR-01, FR-07, FR-08) */}
+          <div className="pt-2 border-t border-[#D9DEE7]">
+            <div className="text-xs font-bold text-red-600 uppercase tracking-wider mb-2 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-pulse" />
+                <span>ROD DEBRIS DETECTIONS & PREDICTED COORDINATES TABLE</span>
+              </div>
+              <span className="text-[11px] font-normal text-[#5B6472]">
+                WGS 84 Geodesic Plane • Decoupled Spatial Uncertainty
+              </span>
+            </div>
+
+            {data.sample_detections && data.sample_detections.length > 0 ? (
+              <div className="overflow-x-auto rounded-lg border border-[#D9DEE7] bg-white">
+                <table className="w-full text-left font-mono text-xs">
+                  <thead className="bg-[#F5F7FA] text-[#5B6472] border-b border-[#D9DEE7]">
+                    <tr>
+                      <th className="py-2.5 px-3 font-semibold">ID / Frame</th>
+                      <th className="py-2.5 px-3 font-semibold">Debris Class</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">Confidence</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">BBox & Ground Contact</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">Pathway ROI</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">Debris Coordinates</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#D9DEE7]">
+                    {data.sample_detections.map((det: any, idx: number) => {
+                      const coords = det.debris_coordinates;
+                      const lat = coords?.latitude ?? det.latitude;
+                      const lon = coords?.longitude ?? det.longitude;
+                      const unc = coords?.uncertainty_m ?? det.coordinate_uncertainty_m;
+                      const st = (coords?.status ?? det.coordinate_status ?? "unavailable").toLowerCase();
+                      const hasCoords = typeof lat === "number" && typeof lon === "number" && !isNaN(lat) && !isNaN(lon) && st !== "unavailable";
+                      const bboxStr = Array.isArray(det.bbox)
+                        ? `[${det.bbox.map((n: number) => Math.round(n)).join(", ")}]`
+                        : typeof det.bbox === "object" && det.bbox
+                        ? `[${Math.round(det.bbox.x1 ?? 0)}, ${Math.round(det.bbox.y1 ?? 0)}, ${Math.round(det.bbox.x2 ?? 0)}, ${Math.round(det.bbox.y2 ?? 0)}]`
+                        : "--";
+                      const groundPoint = coords?.ground_point_pixels;
+
+                      return (
+                        <tr key={idx} className="hover:bg-red-50/30 transition-colors">
+                          <td className="py-2.5 px-3 font-bold text-[#111827]">
+                            {det.frame !== undefined ? `Frame ${det.frame}` : `#${idx + 1}`}
+                            {det.track_id !== undefined && (
+                              <span className="block text-[10px] text-[#5B6472] font-normal">
+                                Track #{det.track_id}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 font-bold text-red-600">
+                            {det.class_name || "FOD"}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-bold text-[#0066FF]">
+                            {det.confidence ? `${(det.confidence * 100).toFixed(1)}%` : "--"}
+                          </td>
+                          <td className="py-2.5 px-3 text-center text-[10px] text-[#5B6472]">
+                            <div>{bboxStr}</div>
+                            {groundPoint && (
+                              <div className="text-[9px] text-[#0066FF] font-semibold mt-0.5">
+                                Base: ({Math.round(groundPoint[0])}, {Math.round(groundPoint[1])})
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
+                              {det.roi_status ? String(det.roi_status).replace(/_/g, " ") : "IN PATHWAY"}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            {hasCoords ? (
+                              <div className="flex flex-col items-center space-y-1">
+                                <span className="font-bold text-[#111827] text-xs">
+                                  {coords?.formatted || `${lat.toFixed(6)}°, ${lon.toFixed(6)}°`}
+                                </span>
+                                <div className="flex items-center space-x-1.5">
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                      st === "verified"
+                                        ? "bg-emerald-50 text-emerald-700 border-emerald-300"
+                                        : "bg-sky-50 text-[#0066FF] border-sky-300"
+                                    }`}
+                                  >
+                                    {st === "verified" ? "Verified RTK" : `Estimated (±${(unc ?? 1.5).toFixed(1)}m)`}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col items-center space-y-0.5">
+                                <span className="text-[#5B6472] italic text-[11px]">Coordinates unavailable</span>
+                                <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-300" title={coords?.source_note || "GPS/altitude telemetry missing"}>
+                                  Telemetry Missing
+                                </span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-center">
+                            <button
+                              onClick={() => setSelectedDebrisForMap(det)}
+                              className={`px-2.5 py-1 rounded text-xs font-semibold flex items-center space-x-1 mx-auto transition border ${
+                                hasCoords
+                                  ? "bg-[#0066FF] hover:bg-[#0052CC] text-white border-[#0066FF] shadow-xs"
+                                  : "bg-[#F5F7FA] text-[#5B6472] hover:bg-[#EAF3FF] hover:text-[#0066FF] border-[#D9DEE7]"
+                              }`}
+                              title={hasCoords ? "View location on tactical map" : "Inspect coordinate projection status"}
+                            >
+                              <MapPin className="w-3.5 h-3.5" />
+                              <span>View on Map</span>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-4 rounded-lg border border-[#D9DEE7] bg-[#F5F7FA] text-center text-[#5B6472]">
+                <span className="text-xs font-semibold">Zero debris detections recorded. Runway surface clear.</span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -371,8 +517,8 @@ export const AnalysisResults: React.FC = () => {
                       <th className="py-2 px-3 font-semibold text-center">Total Lights</th>
                       <th className="py-2 px-3 font-semibold text-center text-[#0066FF]">Lights ON</th>
                       <th className="py-2 px-3 font-semibold text-center text-[#5B6472]">Lights OFF</th>
-                      <th className="py-2 px-3 font-semibold text-center text-amber-600">Unknown / Gaps</th>
                       <th className="py-2 px-3 font-semibold text-center text-red-600">Confirmed Faults</th>
+                      <th className="py-2 px-3 font-semibold text-center">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#D9DEE7] bg-white">
@@ -382,8 +528,12 @@ export const AnalysisResults: React.FC = () => {
                         <td className="py-2 px-3 text-center font-bold text-[#111827]">{r.total}</td>
                         <td className="py-2 px-3 text-center font-bold text-[#0066FF]">{r.on}</td>
                         <td className="py-2 px-3 text-center font-bold text-[#5B6472]">{r.off}</td>
-                        <td className="py-2 px-3 text-center font-bold text-amber-600">{r.unknown}</td>
                         <td className={`py-2 px-3 text-center font-bold ${r.faults > 0 ? "text-red-600 bg-red-50" : "text-[#5B6472]"}`}>{r.faults}</td>
+                        <td className="py-2 px-3 text-center">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${r.faults > 0 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
+                            {r.faults > 0 ? "FAULT" : "NORMAL"}
+                          </span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -394,35 +544,30 @@ export const AnalysisResults: React.FC = () => {
         </div>
       )}
 
-      {/* Video Playback Trigger */}
+      {/* Video Review Workspace with Player, Seek, and Detections (FR-05, FR-06, FR-07, FR-08) */}
       {data.media_type === "VIDEO" && (
-        <div className="flex flex-col space-y-2 pt-2 border-t border-[#D9DEE7]">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[#111827] font-bold uppercase">
-              Analyzed Video with AI Bounding Boxes
-            </span>
-            <button
-              onClick={() => setIsPlayingAnalyzedVideo(!isPlayingAnalyzedVideo)}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#0066FF] hover:bg-[#008CFF] text-[#FFFFFF] text-xs font-bold transition-all shadow-sm shadow-[#0066FF]/20"
-            >
-              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              <span>{isPlayingAnalyzedVideo ? "HIDE ANALYZED VIDEO" : "PLAY ANALYZED VIDEO"}</span>
-            </button>
-          </div>
-
-          {isPlayingAnalyzedVideo && (
-            <div className="aspect-video bg-[#000000] rounded-lg overflow-hidden border border-[#D9DEE7] mt-2">
-              <video
-                src={analyzedVideoUrl}
-                controls
-                autoPlay
-                playsInline
-                className="w-full h-full object-contain"
-              />
-            </div>
-          )}
+        <div className="pt-2 border-t border-[#D9DEE7]">
+          <OfflineVideoReviewWorkspace
+            jobId={jobId}
+            filename={data.filename || data.video_name || "offline_video.mp4"}
+            mediaType={data.media_type || "VIDEO"}
+            analysisType={atype}
+            modelPath={data.model_path}
+            modelVersion={data.model_version}
+            confidenceThreshold={data.confidence_threshold}
+            totalFrames={data.total_frames || 0}
+            processedFrames={data.processed_frames || 0}
+            durationSeconds={data.duration_seconds || 0}
+            elapsedSeconds={data.elapsed_seconds || 0}
+            processingFps={data.processing_fps || 0}
+            outcomeStatus={data.outcome_status}
+            detections={data.sample_detections || []}
+            classCounts={data.class_counts || {}}
+            originalVideoUrl={`${API_BASE}/api/v1/analysis/${encodeURIComponent(jobId)}/original`}
+            annotatedVideoUrl={analyzedVideoUrl}
+            csvReportUrl={csvReportUrl}
+            jsonReportUrl={jsonReportUrl}
+          />
         </div>
       )}
 
@@ -453,23 +598,61 @@ export const AnalysisResults: React.FC = () => {
                     <th className="py-1">Class</th>
                     <th className="py-1">Confidence</th>
                     <th className="py-1">Track ID</th>
+                    <th className="py-1">Coordinates</th>
+                    <th className="py-1 text-right">Map</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#D9DEE7]">
-                  {data.sample_detections.map((det: any, idx: number) => (
-                    <tr key={idx} className="text-[#111827]">
-                      <td className="py-1 uppercase text-[#5B6472]">{det.model || "yolo"}</td>
-                      <td className="py-1 font-bold text-[#0066FF]">{det.class_name}</td>
-                      <td className="py-1 text-[#0066FF]">{(det.confidence * 100).toFixed(1)}%</td>
-                      <td className="py-1 text-[#5B6472]">#{det.track_id ?? "-"}</td>
-                    </tr>
-                  ))}
+                  {data.sample_detections.map((det: any, idx: number) => {
+                    const coords = det.debris_coordinates;
+                    const lat = coords?.latitude ?? det.latitude;
+                    const lon = coords?.longitude ?? det.longitude;
+                    const unc = coords?.uncertainty_m ?? det.coordinate_uncertainty_m;
+                    const st = (coords?.status ?? det.coordinate_status ?? "unavailable").toLowerCase();
+                    const hasCoords = typeof lat === "number" && typeof lon === "number" && !isNaN(lat) && !isNaN(lon) && st !== "unavailable";
+
+                    return (
+                      <tr key={idx} className="text-[#111827] hover:bg-[#F0F6FF]">
+                        <td className="py-1 uppercase text-[#5B6472]">{det.model || "yolo"}</td>
+                        <td className="py-1 font-bold text-[#0066FF]">{det.class_name}</td>
+                        <td className="py-1 text-[#0066FF]">{(det.confidence * 100).toFixed(1)}%</td>
+                        <td className="py-1 text-[#5B6472]">#{det.track_id ?? "-"}</td>
+                        <td className="py-1 text-[10px]">
+                          {hasCoords ? (
+                            <span className="text-[#111827] font-semibold">
+                              {lat.toFixed(5)}°, {lon.toFixed(5)}° (±{(unc ?? 1.5).toFixed(1)}m)
+                            </span>
+                          ) : (
+                            <span className="text-[#5B6472] italic">Unavailable</span>
+                          )}
+                        </td>
+                        <td className="py-1 text-right">
+                          <button
+                            onClick={() => setSelectedDebrisForMap(det)}
+                            className="px-2 py-0.5 rounded text-[10px] bg-[#F5F7FA] hover:bg-[#EAF3FF] hover:text-[#0066FF] border border-[#D9DEE7] text-[#5B6472] font-semibold inline-flex items-center space-x-1"
+                            title="Inspect on map"
+                          >
+                            <MapPin className="w-3 h-3 text-[#0066FF]" />
+                            <span>Map</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
         </div>
       )}
+
+      {/* Reusable Debris Location Map Modal (FR-08) */}
+      <DebrisLocationMapModal
+        isOpen={!!selectedDebrisForMap}
+        onClose={() => setSelectedDebrisForMap(null)}
+        detection={selectedDebrisForMap}
+        droneTelemetry={data.drone_telemetry}
+      />
     </div>
   );
 };

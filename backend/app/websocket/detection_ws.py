@@ -221,7 +221,10 @@ async def websocket_camera_stream_endpoint(websocket: WebSocket, camera_id: str)
                 "frame_id": info.get("frame_id", 0),
                 "timestamp": time.time(),
                 "camera_id": camera_id,
+                "flight_id": info.get("flight_id"),
+                "flight_status": info.get("flight_status", "FLYING"),
                 "status": info["status"],
+                "camera_status": info["status"],
                 "width": info.get("width", 1920),
                 "height": info.get("height", 1080),
                 "fps": info.get("inference_fps") or info.get("fps", 0.0),
@@ -239,6 +242,11 @@ async def websocket_camera_stream_endpoint(websocket: WebSocket, camera_id: str)
                 "counts": counts,
                 "session_totals": session_totals,
                 "average_confidence": info.get("average_confidence", 0.0),
+                "latest_detected_object": info.get("latest_detected_object"),
+                "latest_confidence": info.get("latest_confidence"),
+                "last_detection_time": info.get("last_detection_time"),
+                "frames_analyzed": info.get("frames_analyzed", 0),
+                "pre_landing_summary": info.get("pre_landing_summary"),
                 "summary": info.get("summary", {
                     "nav_count": counts.get("navigation", 0),
                     "fod_count": counts.get("fod", 0),
@@ -251,7 +259,7 @@ async def websocket_camera_stream_endpoint(websocket: WebSocket, camera_id: str)
                     "inference_fps": info.get("inference_fps", 0.0),
                     "inference_ms": info.get("latency_ms", 0.0)
                 },
-                "model": info.get("model", "navigation_best.pt + FOD_Karhtikeyan.pt + runway_light_best.pt"),
+                "model": info.get("model", "runway_light_best.pt"),
                 "error": info.get("error")
             }
 

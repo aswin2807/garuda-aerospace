@@ -2,10 +2,22 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { LogIn, LogOut, User as UserIcon } from "lucide-react";
 import { useDroneStore } from "../../stores/droneStore";
+import { useAuthStore } from "../../stores/authStore";
 
 export const TopBar: React.FC = () => {
+  const router = useRouter();
+  const { user, isAuthenticated, logout } = useAuthStore();
   const connectionStatus = useDroneStore((s) => s.connectionStatus);
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace("/login");
+  };
+
+
   const drone = useDroneStore((s) => s.drone);
   const mission = useDroneStore((s) => s.mission);
   const activeCameraId = useDroneStore((s) => s.activeCameraId);
@@ -31,22 +43,36 @@ export const TopBar: React.FC = () => {
     return () => clearInterval(interval);
   }, [fetchModelStatus]);
 
+
+
   const isOnline = connectionStatus === "CONNECTED"
 
   return (
     <header className="flex items-center justify-between px-6 py-3 bg-[#FFFFFF] border-b border-[#D9DEE7] text-[#111827] select-none">
       <div className="flex items-center space-x-4">
-        <Link href="/" className="flex items-center space-x-2.5 group">
-          <div className="w-8 h-8 relative flex items-center justify-center flex-shrink-0">
+        <Link
+          href="/"
+          className="flex items-center space-x-2.5 group flex-shrink-0"
+          title="Garuda Aerospace — Runway Safety"
+        >
+          <div className="w-9 h-9 sm:w-10 sm:h-10 relative flex items-center justify-center flex-shrink-0">
             <img
               src="/garuda_logo.png"
               alt="Garuda Aerospace Logo"
               className="w-full h-full object-contain"
             />
           </div>
-          <span className="font-mono font-bold text-sm tracking-wider text-[#111827]">
-            GARUDA <span className="text-[#0066FF]">AEROSPACE</span> COMMAND CENTRE
-          </span>
+          <div className="flex flex-col justify-center items-start text-left select-none">
+            <span className="font-bold text-xs sm:text-[13px] tracking-tight text-[#0A2558] leading-tight">
+              Garuda
+            </span>
+            <span className="font-bold text-xs sm:text-[13px] tracking-tight text-[#0066FF] leading-tight">
+              Aerospace
+            </span>
+            <span className="font-bold text-[8.5px] sm:text-[9px] tracking-[0.16em] uppercase text-[#0A2558] leading-tight mt-0.5">
+              RUNWAY SAFETY
+            </span>
+          </div>
         </Link>
 
 
@@ -149,6 +175,39 @@ export const TopBar: React.FC = () => {
         <div className="font-mono text-xs text-[#5B6472] tracking-wider">
           {timeStr} UTC
         </div>
+
+        <span className="text-[#D9DEE7]">|</span>
+
+        {/* Operator Profile / Auth Indicator */}
+        {isAuthenticated && user ? (
+          <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-[#F5F7FA] border border-[#D9DEE7] text-xs font-mono">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <UserIcon className="w-3.5 h-3.5 text-[#5B6472]" />
+              <span className="text-[#111827] font-semibold truncate max-w-[120px]" title={user.email}>
+                {user.name || user.email.split("@")[0]}
+              </span>
+              <span className="text-[10px] text-[#0066FF] font-bold">({user.role})</span>
+            </div>
+            <button
+              onClick={handleLogout}
+              title="Sign Out"
+              className="px-2 py-1 rounded text-xs font-mono font-semibold text-[#5B6472] hover:text-red-600 hover:bg-red-50 border border-[#D9DEE7] hover:border-red-200 transition-colors flex items-center space-x-1"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>SIGN OUT</span>
+            </button>
+
+          </div>
+        ) : (
+          <Link
+            href="/login"
+            className="px-2.5 py-1 rounded bg-[#0066FF] hover:bg-[#0052CC] text-white text-xs font-mono font-semibold transition-all flex items-center space-x-1.5 shadow-sm"
+          >
+            <LogIn className="w-3.5 h-3.5" />
+            <span>SIGN IN</span>
+          </Link>
+        )}
       </div>
     </header>
   );

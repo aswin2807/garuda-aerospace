@@ -17,7 +17,7 @@ import { AnalysisWorkspace } from "../../components/analysis/AnalysisWorkspace";
 export default function AnalysisPage() {
   return (
     <div className="flex flex-col h-screen w-screen bg-[#FFFFFF] overflow-hidden font-sans select-none">
-      {/* Top Header with Garuda Aerospace Command Centre branding */}
+      {/* Top Header with Garuda Aerospace branding */}
       <TopBar />
 
       {/* Main Workspace Layout */}

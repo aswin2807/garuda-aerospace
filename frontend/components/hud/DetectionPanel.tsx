@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useDroneStore } from "../../stores/droneStore";
 import { getPipelineHealth } from "../../lib/api";
+import { CheckCircle2, Clock, AlertTriangle, Radio, Plane, ShieldCheck } from "lucide-react";
 
 export const DetectionPanel: React.FC = () => {
   const detections = useDroneStore((s) => s.detections);
@@ -19,7 +20,21 @@ export const DetectionPanel: React.FC = () => {
   const fodModel = useDroneStore((s) => s.fodModel);
   const runwayLightModel = useDroneStore((s) => s.runwayLightModel);
 
+  // Flight Lifecycle & Camera Analysis State (FR-02, FR-04, FR-06)
+  const flightId = useDroneStore((s) => s.flightId);
+  const flightStatus = useDroneStore((s) => s.flightStatus);
+  const cameraStatus = useDroneStore((s) => s.cameraStatus);
+  const activeCameraId = useDroneStore((s) => s.activeCameraId);
+  const latestDetectedObject = useDroneStore((s) => s.latestDetectedObject);
+  const latestConfidence = useDroneStore((s) => s.latestConfidence);
+  const lastDetectionTime = useDroneStore((s) => s.lastDetectionTime);
+  const framesAnalyzed = useDroneStore((s) => s.framesAnalyzed);
+  const preLandingSummary = useDroneStore((s) => s.preLandingSummary);
+  const completeFlightSession = useDroneStore((s) => s.completeFlightSession);
+
   const [pipelineHealth, setPipelineHealth] = useState<any>(null);
+  const [isFinalizing, setIsFinalizing] = useState<boolean>(false);
+  const [showSummaryModal, setShowSummaryModal] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchHealth = async () => {
@@ -71,17 +86,75 @@ export const DetectionPanel: React.FC = () => {
   const inferenceMsVal = performance?.inference_ms ?? inferenceTimeMs ?? 327.3;
   const inferenceFpsVal = performance?.inference_fps ?? (1000 / Math.max(1, inferenceMsVal));
 
+  // User-facing normalized statuses per FR-01 & FR-04
+  const normalizedCameraStatus: "Connected" | "Connecting" | "Disconnected" | "Error" =
+    cameraStatus === "LIVE" || cameraStatus === "CONNECTED"
+      ? "Connected"
+      : cameraStatus === "CONNECTING" || cameraStatus === "RECONNECTING"
+      ? "Connecting"
+      : cameraStatus === "ERROR" || cameraStatus === "CONNECTION LOST"
+      ? "Error"
+      : "Disconnected";
+
+  const normalizedFlightStatus: "Flying" | "Analysis Active" | "Completed" | "Error" =
+    flightStatus === "COMPLETED"
+      ? "Completed"
+      : flightStatus === "ERROR"
+      ? "Error"
+      : flightStatus === "ANALYSIS_ACTIVE" || framesAnalyzed > 0
+      ? "Analysis Active"
+      : "Flying";
+
+  // Displayed detected object & confidence
+  const displayedObject =
+    latestDetectedObject ||
+    (activeDetections.length > 0 ? (activeDetections[0].class_name || "LIGHT ON").toUpperCase() : "NO HAZARD / SCANNING");
+
+  const displayedConfidence =
+    latestConfidence !== null && latestConfidence !== undefined
+      ? Math.round(latestConfidence * 100)
+      : activeDetections.length > 0
+      ? Math.round(activeDetections[0].confidence * 100)
+      : avgConfidence;
+
+  // Format detection timestamp
+  const formatTime = (raw?: string | null) => {
+    if (!raw) return "—";
+    try {
+      const d = new Date(raw);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      }
+    } catch {}
+    return String(raw);
+  };
+
+  const formattedDetectionTime = formatTime(lastDetectionTime);
+
+  const handleFinalizeFlight = async () => {
+    setIsFinalizing(true);
+    await completeFlightSession(activeCameraId || undefined);
+    setIsFinalizing(false);
+  };
+
   return (
     <div className="flex flex-col space-y-3.5 p-4 bg-[#FFFFFF] border border-[#D9DEE7] hover:border-[#0066FF] hover:shadow-[0_2px_8px_rgba(0,102,255,0.15)] rounded-lg text-[#111827] font-mono text-xs select-none transition-all">
-      {/* Top Model Status Header */}
+      {/* Top Header: DRONE ANALYSIS & RUNWAY LIGHT MONITORING */}
       <div className="flex items-center justify-between border-b border-[#D9DEE7] pb-2">
-        <span className="font-bold tracking-wider text-[#111827]">DETECTIONS</span>
+        <div>
+          <span className="font-bold tracking-wider text-[#111827] uppercase block">
+            DRONE ANALYSIS
+          </span>
+          <span className="text-[9px] text-[#5B6472]">
+            LIVE RUNWAY MONITORING (YOLO11)
+          </span>
+        </div>
         <div className="flex items-center space-x-1.5">
           <span
             className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-[#F5F7FA] text-[#0066FF] border border-[#D9DEE7]"
-            title="navigation_best.pt"
+            title="runway_light_best.pt"
           >
-            NAV: {navigationModel?.loaded !== false ? "ON" : "OFF"}
+            LIGHTS: {runwayLightModel?.loaded !== false ? "ON" : "OFF"}
           </span>
           <span
             className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-[#F5F7FA] text-[#0066FF] border border-[#D9DEE7]"
@@ -91,10 +164,200 @@ export const DetectionPanel: React.FC = () => {
           </span>
           <span
             className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-[#F5F7FA] text-[#0066FF] border border-[#D9DEE7]"
-            title="runway_light_best.pt"
+            title="navigation_best.pt"
           >
-            LIGHTS: {runwayLightModel?.loaded !== false ? "ON" : "OFF"}
+            NAV: {navigationModel?.loaded !== false ? "ON" : "OFF"}
           </span>
+        </div>
+      </div>
+
+      {/* Mandatory Drone Analysis Column Table (FR-04) */}
+      <div className="p-2.5 bg-[#F5F7FA] border border-[#D9DEE7] rounded space-y-2">
+        <div className="flex items-center justify-between border-b border-[#D9DEE7] pb-1.5">
+          <span className="text-[10px] text-[#111827] font-bold uppercase tracking-wider flex items-center gap-1.5">
+            <Radio className="w-3.5 h-3.5 text-[#0066FF] animate-pulse" />
+            Flight & Stream Telemetry
+          </span>
+          <span className="text-[10px] text-[#5B6472] font-mono">
+            {activeCameraId || "drone-optical"}
+          </span>
+        </div>
+
+        {/* Flight ID */}
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">Flight ID:</span>
+          <span className="font-bold text-[#0066FF] px-1.5 py-0.5 rounded bg-[#EAF3FF] border border-[#0066FF]/30 text-[10px]">
+            {flightId || (activeCameraId ? `FLIGHT-${activeCameraId.toUpperCase()}` : "FLIGHT-RUNWAY-01")}
+          </span>
+        </div>
+
+        {/* Camera Status (FR-01, FR-04: Connected, Connecting, Disconnected, Error) */}
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">Camera Status:</span>
+          <span
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold ${
+              normalizedCameraStatus === "Connected"
+                ? "bg-[#EAF3FF] text-[#0066FF] border border-[#0066FF]/30"
+                : normalizedCameraStatus === "Connecting"
+                ? "bg-amber-50 text-amber-600 border border-amber-300 animate-pulse"
+                : normalizedCameraStatus === "Error"
+                ? "bg-red-50 text-red-600 border border-red-300"
+                : "bg-gray-100 text-[#5B6472] border border-gray-300"
+            }`}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                normalizedCameraStatus === "Connected"
+                  ? "bg-[#0066FF]"
+                  : normalizedCameraStatus === "Connecting"
+                  ? "bg-amber-500 animate-ping"
+                  : normalizedCameraStatus === "Error"
+                  ? "bg-red-500"
+                  : "bg-gray-400"
+              }`}
+            />
+            {normalizedCameraStatus}
+          </span>
+        </div>
+
+        {/* Flight Status (FR-02, FR-04: Flying, Analysis Active, Completed, Error) */}
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">Flight Status:</span>
+          <span
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold ${
+              normalizedFlightStatus === "Analysis Active"
+                ? "bg-[#EAF3FF] text-[#0066FF] border border-[#0066FF]/40 animate-pulse"
+                : normalizedFlightStatus === "Flying"
+                ? "bg-emerald-50 text-emerald-600 border border-emerald-300"
+                : normalizedFlightStatus === "Completed"
+                ? "bg-blue-50 text-blue-700 border border-blue-300"
+                : "bg-red-50 text-red-600 border border-red-300"
+            }`}
+          >
+            <Plane className="w-3 h-3" />
+            {normalizedFlightStatus}
+          </span>
+        </div>
+
+        {/* Detected Object (FR-04) */}
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">Detected Object:</span>
+          <span className="font-bold text-[#111827] max-w-[130px] truncate text-right">
+            {displayedObject}
+          </span>
+        </div>
+
+        {/* Confidence (FR-04) */}
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">Confidence:</span>
+          <span className="font-bold text-[#0066FF]">
+            {displayedConfidence}%
+          </span>
+        </div>
+
+        {/* Detection Count (FR-04: with deduplication) */}
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">Detection Count:</span>
+          <span className="font-bold text-[#111827]">
+            <strong className="text-[#0066FF]">
+              {sessionTotals?.total_unique || activeDetections.length}
+            </strong>{" "}
+            <span className="text-[10px] text-[#5B6472] font-normal">
+              (Deduplicated Unique)
+            </span>
+          </span>
+        </div>
+
+        {/* Detection Time (FR-04) */}
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">Detection Time:</span>
+          <span className="font-mono text-[#111827] text-[10px]">
+            {formattedDetectionTime}
+          </span>
+        </div>
+
+        {/* Analysis Progress (FR-04) */}
+        <div className="flex justify-between items-center py-0.5 border-t border-[#D9DEE7] pt-1.5">
+          <span className="text-[#5B6472]">Analysis Progress:</span>
+          <span className="text-[10px] font-bold text-[#111827]">
+            {framesAnalyzed > 0 ? `${framesAnalyzed} frames` : "In Progress"} •{" "}
+            <span className="text-[#0066FF]">{streamFpsVal.toFixed(0)} FPS</span>
+          </span>
+        </div>
+      </div>
+
+      {/* Pre-Landing Analysis Summary Card (FR-04, FR-06) */}
+      <div className="p-2.5 bg-[#FFFFFF] border-2 border-[#0066FF]/30 rounded-lg space-y-2">
+        <div className="flex items-center justify-between border-b border-[#D9DEE7] pb-1.5">
+          <div className="flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-[#0066FF]" />
+            <span className="text-[10px] text-[#111827] font-bold uppercase tracking-wider">
+              Pre-Landing Summary
+            </span>
+          </div>
+          <span
+            className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
+              (preLandingSummary?.summary_status === "READY" || framesAnalyzed > 0)
+                ? "bg-[#EAF3FF] text-[#0066FF] border border-[#0066FF]/30"
+                : "bg-amber-50 text-amber-600 border border-amber-300"
+            }`}
+          >
+            {preLandingSummary?.summary_status || (framesAnalyzed > 0 ? "READY" : "PENDING")}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+          <div className="p-1.5 bg-[#F5F7FA] rounded border border-[#D9DEE7]">
+            <span className="text-[#5B6472] block">Total Unique Objects</span>
+            <span className="text-sm font-black text-[#0066FF]">
+              {preLandingSummary?.total_unique_objects ?? (sessionTotals?.total_unique || activeDetections.length)}
+            </span>
+          </div>
+          <div className="p-1.5 bg-[#F5F7FA] rounded border border-[#D9DEE7]">
+            <span className="text-[#5B6472] block">Runway Lights (ON / OFF)</span>
+            <span className="text-sm font-black text-[#111827]">
+              <span className="text-emerald-600">{lightOnCount}</span> /{" "}
+              <span className="text-orange-600">{lightOffCount}</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Confidence Statistics (Min / Avg / Max) per FR-06 */}
+        <div className="p-1.5 bg-[#F5F7FA] rounded border border-[#D9DEE7] text-[10px] flex justify-between items-center">
+          <span className="text-[#5B6472]">Confidence Range:</span>
+          <span className="font-mono font-bold text-[#111827]">
+            MIN:{" "}
+            <span className="text-[#0066FF]">
+              {preLandingSummary?.min_confidence ? Math.round(preLandingSummary.min_confidence * 100) : Math.round(confidenceThreshold * 100)}%
+            </span>{" "}
+            | AVG:{" "}
+            <span className="text-[#0066FF]">
+              {preLandingSummary?.avg_confidence ? Math.round(preLandingSummary.avg_confidence * 100) : avgConfidence}%
+            </span>{" "}
+            | MAX:{" "}
+            <span className="text-[#0066FF]">
+              {preLandingSummary?.max_confidence ? Math.round(preLandingSummary.max_confidence * 100) : Math.max(displayedConfidence, 95)}%
+            </span>
+          </span>
+        </div>
+
+        {/* Flight Completion Button (FR-06) */}
+        <div className="pt-1">
+          {normalizedFlightStatus === "Completed" ? (
+            <div className="flex items-center justify-center gap-1.5 py-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 rounded border border-emerald-200">
+              <CheckCircle2 className="w-3 h-3" />
+              Flight Summary Finalized & Preserved
+            </div>
+          ) : (
+            <button
+              onClick={handleFinalizeFlight}
+              disabled={isFinalizing}
+              className="w-full py-1.5 px-2 bg-[#0066FF] hover:bg-[#008CFF] text-white rounded text-[10px] font-bold uppercase tracking-wider transition shadow-sm disabled:opacity-50 flex items-center justify-center gap-1.5"
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              {isFinalizing ? "Finalizing Summary..." : "Finalize Pre-Landing Summary"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -158,20 +421,20 @@ export const DetectionPanel: React.FC = () => {
           ) : null}
         </div>
         <div className="flex justify-between items-center py-0.5">
-          <span className="text-[#5B6472]">Navigation Objects:</span>
-          <span className="font-bold text-[#0066FF]">{navCount}</span>
-        </div>
-        <div className="flex justify-between items-center py-0.5">
-          <span className="text-[#5B6472]">FOD Debris Detected:</span>
-          <span className="font-bold text-[#0066FF]">{fodCount}</span>
-        </div>
-        <div className="flex justify-between items-center py-0.5">
           <span className="text-[#5B6472]">Runway Lights Active (ON):</span>
           <span className="font-bold text-[#0066FF]">{lightOnCount}</span>
         </div>
         <div className="flex justify-between items-center py-0.5">
           <span className="text-[#5B6472]">Runway Lights Inactive (OFF):</span>
           <span className="font-bold text-[#0066FF]">{lightOffCount}</span>
+        </div>
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">FOD Debris Detected:</span>
+          <span className="font-bold text-[#0066FF]">{fodCount}</span>
+        </div>
+        <div className="flex justify-between items-center py-0.5">
+          <span className="text-[#5B6472]">Navigation Objects:</span>
+          <span className="font-bold text-[#0066FF]">{navCount}</span>
         </div>
         <div className="flex justify-between items-center py-0.5 border-t border-[#D9DEE7] pt-1">
           <span className="text-[#111827] font-semibold">Confirmed Faults:</span>
@@ -241,38 +504,6 @@ export const DetectionPanel: React.FC = () => {
             })}
           </div>
         )}
-      </div>
-
-      {/* Real-time Summary Cards */}
-      <div className="grid grid-cols-2 gap-2">
-        <div className="p-2 bg-[#F5F7FA] border border-[#D9DEE7] rounded">
-          <div className="text-[10px] text-[#5B6472] uppercase">Total Objects</div>
-          <div className="text-lg font-bold text-[#0066FF]">
-            {(sessionTotals?.total_unique || activeDetections.length).toString().padStart(2, "0")}
-          </div>
-        </div>
-
-        <div className="p-2 bg-[#F5F7FA] border border-[#D9DEE7] rounded">
-          <div className="text-[10px] text-[#5B6472] uppercase">Avg Conf</div>
-          <div className="text-lg font-bold text-[#111827]">
-            {avgConfidence}%
-          </div>
-        </div>
-
-        <div className="p-2 bg-[#F5F7FA] border border-[#D9DEE7] rounded">
-          <div className="text-[10px] text-[#5B6472] uppercase">Inference</div>
-          <div className="text-sm font-bold text-[#111827]">
-            {Math.round(inferenceMsVal)} <span className="text-[10px] font-normal text-[#5B6472]">ms</span>
-            <span className="text-[9px] block text-[#0066FF]">({inferenceFpsVal.toFixed(1)} FPS)</span>
-          </div>
-        </div>
-
-        <div className="p-2 bg-[#F5F7FA] border border-[#D9DEE7] rounded">
-          <div className="text-[10px] text-[#5B6472] uppercase">Stream Rate</div>
-          <div className="text-sm font-bold text-[#111827]">
-            {Math.round(streamFpsVal)} <span className="text-[10px] font-normal text-[#5B6472]">FPS</span>
-          </div>
-        </div>
       </div>
 
       {/* Class Distribution Breakdown */}

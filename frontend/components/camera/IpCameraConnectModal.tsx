@@ -136,6 +136,12 @@ export const IpCameraConnectModal: React.FC<IpCameraConnectModalProps> = ({
       if (res.success) {
         setActiveCameraId(res.camera_id);
         setCameraStatus((res.status as CameraStatus) || "LIVE");
+        if (res.flight_id) {
+          useDroneStore.getState().setFlightId(res.flight_id);
+        }
+        if (res.flight_status) {
+          useDroneStore.getState().setFlightStatus(res.flight_status);
+        }
         setCameraInfo({
           ip: ipAddress,
           stream_url: res.stream_url,

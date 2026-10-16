@@ -60,3 +60,6 @@ frontend/dist/
 *.db
 *.sqlite
 *.sqlite3
+
+# Large local project archive
+/garuda_rod_verified_project.zip

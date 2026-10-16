@@ -23,6 +23,9 @@ from backend.app.services.database_service import database_service
 from backend.app.services.export_service import export_service
 from backend.app.services.frame_processor import frame_processor
 from backend.app.services.model_verifier import model_verifier
+from backend.app.services.debris_coordinate_service import debris_coordinate_service
+from backend.app.services.drone_service import drone_service
+from backend.app.services.runway_roi_service import runway_roi_service
 
 PROCESSED_DIR = Path(os.getcwd()) / "data" / "processed"
 RESULTS_DIR = Path(os.getcwd()) / "data" / "results"
@@ -50,6 +53,9 @@ class AnalysisWorker:
         media_type: str = "VIDEO",
         analyze_every_frame: bool = True,
         ws_manager: Optional[Any] = None,
+        roi_polygon: Optional[Any] = None,
+        boundary_rule: Optional[str] = None,
+        **kwargs
     ):
         self.job_id = job_id
         self.file_path = file_path
@@ -57,6 +63,11 @@ class AnalysisWorker:
         self.media_type = media_type
         self.analyze_every_frame = analyze_every_frame
         self.ws_manager = ws_manager
+        self.roi_polygon = roi_polygon
+        self.boundary_rule = boundary_rule
+        self.pathway_filtered_count: int = 0
+        self.outside_pathway_candidates: List[Dict[str, Any]] = []
+        self.roi_info: Optional[Dict[str, Any]] = None
 
         self.is_running = False
         self.is_paused = False
@@ -222,13 +233,19 @@ class AnalysisWorker:
                 "inference_ms": round((self.elapsed_seconds / max(1, self.processed_frames)) * 1000.0, 1),
             },
             "recent_detections": self.recent_detections[-10:],
+            "roi_info": self.roi_info,
+            "pathway_filtered_count": self.pathway_filtered_count,
         }
 
         # Model-isolated counts payload
         if self.analysis_type in ("NAVIGATION", "ALL"):
             payload["counts"] = {"navigation": disp_nav}
         elif self.analysis_type in ("FOD", "FOD_DEBRIS"):
-            payload["counts"] = {"fod": disp_fod}
+            payload["counts"] = {
+                "fod": disp_fod,
+                "in_pathway": disp_fod,
+                "outside_pathway_filtered": self.pathway_filtered_count
+            }
         elif self.analysis_type in ("RUNWAY_LIGHT", "RUNWAY"):
             payload["counts"] = {
                 "total_lights": self.total_lights_count,
@@ -256,6 +273,18 @@ class AnalysisWorker:
         out = frame.copy()
         h, w = out.shape[:2]
 
+        # Draw active Runway Pathway ROI boundary overlay for FOD
+        if self.analysis_type in ("FOD", "FOD_DEBRIS"):
+            poly = (self.roi_info or {}).get("polygon") or self.roi_polygon
+            out = runway_roi_service.draw_pathway_overlay(
+                out,
+                polygon=poly,
+                source_id=self.file_path,
+                color=(255, 180, 0),
+                alpha=0.08,
+                draw_label=True
+            )
+
         for d in detections:
             bbox = d.get("bbox") or [0, 0, 0, 0]
             if isinstance(bbox, dict):
@@ -273,24 +302,44 @@ class AnalysisWorker:
                 continue
 
             cls_name = str(d.get("class_name", "OBJECT")).upper()
+            state = str(d.get("state", "")).upper()
             conf = float(d.get("confidence", 0.0))
-            tid = d.get("track_id")
+            conf_pct = int(round(conf * 100))
 
-            # User requirement: Detected objects highlighted with clear red bounding boxes
-            color = (0, 0, 255)  # Bright Red in BGR
-            if self.analysis_type in ("FOD", "FOD_DEBRIS"):
-                label_txt = f"FOD {int(conf * 100)}%"
+            # Distinguish LIGHT ON (Emerald Green) from LIGHT OFF (Crimson Red) (PRD Section 2.3)
+            if "LIGHT ON" in cls_name or state == "ON":
+                color = (94, 197, 34)  # Emerald Green in BGR (RGB: 34, 197, 94)
+                label_txt = f"LIGHT ON · {conf_pct}%"
+            elif "LIGHT OFF" in cls_name or state in ("OFF", "OFF-GAP"):
+                color = (68, 68, 239)  # Crimson Red in BGR (RGB: 239, 68, 68)
+                label_txt = f"LIGHT OFF · {conf_pct}%"
+            elif self.analysis_type in ("FOD", "FOD_DEBRIS") or "FOD" in cls_name:
+                color = (0, 0, 255)    # Red in BGR for FOD Debris
+                label_txt = f"FOD · {conf_pct}%"
             else:
-                label_txt = f"{cls_name} {int(conf * 100)}%"
-
-            if tid is not None:
-                label_txt += f" #{tid}"
+                color = (255, 180, 0)
+                label_txt = f"{cls_name} · {conf_pct}%"
 
             cv2.rectangle(out, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
-            (tw, th), _ = cv2.getTextSize(label_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            by1 = max(0, y1 - th - 6)
-            cv2.rectangle(out, (x1, by1), (x1 + tw + 6, y1), color, -1)
-            cv2.putText(out, label_txt, (x1 + 3, y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.44
+            (tw, th), bl = cv2.getTextSize(label_txt, font, font_scale, 1)
+            pill_h = th + bl + 6
+            pill_w = tw + 8
+
+            # Smart placement: above box if space permits, else below (PRD Section 2.2)
+            if y1 - pill_h >= 2:
+                by1 = y1 - pill_h - 2
+            else:
+                by1 = min(h - pill_h - 2, y2 + 2)
+            bx1 = max(2, min(x1, w - pill_w - 2))
+            by2 = by1 + pill_h
+            bx2 = bx1 + pill_w
+
+            cv2.rectangle(out, (bx1, by1), (bx2, by2), color, -1)
+            cv2.rectangle(out, (bx1, by1), (bx2, by2), (18, 18, 18), 1, cv2.LINE_AA)
+            cv2.putText(out, label_txt, (bx1 + 4, by1 + th + 3), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
 
         return out
 
@@ -405,19 +454,61 @@ class AnalysisWorker:
                     annotated_frame = self._draw_annotations(frame, frame_dets)
 
                 elif self.analysis_type in ("FOD", "FOD_DEBRIS"):
-                    # FOD Model ONLY (FOD_Karhtikeyan.pt)
+                    # FOD Model ONLY (FOD_Karhtikeyan.pt) with Runway Pathway ROI Filtering
                     if fod_service.loaded:
-                        raw_dets = fod_service.predict(frame, conf=settings.FOD_CONFIDENCE, iou=settings.IOU_THRESHOLD)
+                        raw_dets = fod_service.predict(
+                            frame,
+                            conf=settings.FOD_CONFIDENCE,
+                            iou=settings.IOU_THRESHOLD,
+                            filter_pathway=True,
+                            source_id=self.file_path,
+                            roi_polygon=self.roi_polygon,
+                            boundary_rule=self.boundary_rule
+                        )
+                        if hasattr(fod_service, "last_roi_result") and fod_service.last_roi_result:
+                            if not self.roi_info:
+                                self.roi_info = fod_service.last_roi_result.get("roi_info")
+                            rej_dets = fod_service.last_roi_result.get("filtered_out_detections", [])
+                            self.pathway_filtered_count += len(rej_dets)
+                            if len(self.outside_pathway_candidates) < 50:
+                                self.outside_pathway_candidates.extend(rej_dets[:5])
+
                         for d in raw_dets:
                             d["model"] = "fod"
                             d["analysis_type"] = "FOD"
                         self.total_frame_detections += len(raw_dets)
                         tracked = self.tracker.update(raw_dets, frame_idx)
                         frame_dets = tracked
+                        # Retrieve active drone telemetry if connected
+                        active_telem = None
+                        try:
+                            with SessionLocal() as db_telem:
+                                active_telem = drone_service.get_telemetry(db_telem)
+                        except Exception:
+                            active_telem = None
+
+                        if not active_telem and getattr(self, "telemetry", None):
+                            active_telem = self.telemetry
+
                         for d in tracked:
                             tid = d.get("track_id")
                             if tid is not None:
                                 self.unique_fod.add(tid)
+                            # Predict geographical coordinates (FR-03, FR-04, FR-05)
+                            coords = debris_coordinate_service.predict_coordinates(
+                                bbox=d.get("bbox") or d.get("xyxy"),
+                                image_width=width,
+                                image_height=height,
+                                telemetry=active_telem
+                            )
+                            d["debris_coordinates"] = coords
+                            d["latitude"] = coords.get("latitude")
+                            d["longitude"] = coords.get("longitude")
+                            d["coordinate_uncertainty_m"] = coords.get("uncertainty_m")
+                            d["coordinate_status"] = coords.get("status")
+                            d["coordinate_method"] = coords.get("method")
+                            d["coordinate_formatted"] = coords.get("formatted")
+
                         self.class_counts["FOD"] = len(self.unique_fod)
                         self.fod_count = len(self.unique_fod) if self.unique_fod else len(tracked)
                     annotated_frame = self._draw_annotations(frame, frame_dets)
@@ -667,12 +758,23 @@ class AnalysisWorker:
 
                     db.commit()
 
+                    try:
+                        from backend.app.services.central_results_service import central_results_service
+                        central_results_service.sync_analysis_job_to_central_result(self.job_id)
+                    except Exception as ex_sync:
+                        logger.error(f"[ANALYSIS_WORKER] Error syncing job to central results: {ex_sync}")
+
             self._broadcast_progress(status="COMPLETED", outcome_status=outcome_st)
             logger.info(f"[{self.analysis_type}_JOB] Analysis completed: {self.processed_frames} frames in {final_elapsed:.1f}s for {self.job_id}")
 
         except Exception as e:
             logger.error(f"[ANALYSIS_WORKER] Job {self.job_id} failed: {e}", exc_info=True)
             self._update_db_status("FAILED", error=str(e), outcome_status="FAILED")
+            try:
+                from backend.app.services.central_results_service import central_results_service
+                central_results_service.sync_analysis_job_to_central_result(self.job_id)
+            except Exception:
+                pass
             self._broadcast_progress(status="FAILED", outcome_status="FAILED")
         finally:
             self.is_running = False

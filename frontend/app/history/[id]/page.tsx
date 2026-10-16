@@ -23,10 +23,12 @@ import {
   RefreshCw,
   Eye,
   Hash,
+  MapPin,
 } from "lucide-react";
 
 import { TopBar } from "../../../components/hud/TopBar";
 import { Sidebar } from "../../../components/hud/Sidebar";
+import { DebrisLocationMapModal } from "../../../components/analysis/DebrisLocationMapModal";
 import {
   getAnalysisResults,
   getMissionReport,
@@ -49,6 +51,7 @@ export default function HistoryDetailPage() {
   const [activeMediaTab, setActiveMediaTab] = useState<"ANNOTATED" | "ORIGINAL">("ANNOTATED");
   const [originalMediaError, setOriginalMediaError] = useState<boolean>(false);
   const [annotatedMediaError, setAnnotatedMediaError] = useState<boolean>(false);
+  const [selectedDebrisForMap, setSelectedDebrisForMap] = useState<any | null>(null);
 
   const loadRecord = async () => {
     if (!id) return;
@@ -395,8 +398,8 @@ export default function HistoryDetailPage() {
                         <div className="text-xl font-bold text-rose-600 mt-1">{record.confirmed_faults}</div>
                       </div>
                       <div className="p-3 bg-[#F5F7FA] rounded-lg border border-[#D9DEE7]">
-                        <div className="text-[10px] text-[#5B6472] uppercase font-bold">Unknown Lights</div>
-                        <div className="text-xl font-bold text-[#111827] mt-1">{record.unknown_light_count || 0}</div>
+                        <div className="text-[10px] text-[#5B6472] uppercase font-bold">Total Lights</div>
+                        <div className="text-xl font-bold text-[#111827] mt-1">{(record.light_on_count || 0) + (record.light_off_count || 0)}</div>
                       </div>
                       <div className="p-3 bg-[#F5F7FA] rounded-lg border border-[#D9DEE7]">
                         <div className="text-[10px] text-[#5B6472] uppercase font-bold">Rows Analyzed</div>
@@ -554,32 +557,75 @@ export default function HistoryDetailPage() {
                           <th className="py-2.5 px-3">Confidence</th>
                           <th className="py-2.5 px-3">Bounding Box [x1, y1, x2, y2]</th>
                           <th className="py-2.5 px-3">Track ID</th>
+                          <th className="py-2.5 px-3">Debris Coordinates</th>
+                          <th className="py-2.5 px-3 text-right">Map</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#D9DEE7] text-xs">
-                        {record.sample_detections.map((det: any, idx: number) => (
-                          <tr key={idx} className="hover:bg-[#F0F6FF]">
-                            <td className="py-2.5 px-3 font-mono text-[#5B6472]">
-                              Frame {det.frame !== undefined ? det.frame : "--"}
-                            </td>
-                            <td className="py-2.5 px-3 font-bold text-[#111827]">
-                              {det.class_name}
-                            </td>
-                            <td className="py-2.5 px-3">
-                              <span className="font-mono font-bold text-[#0066FF]">
-                                {det.confidence ? `${(det.confidence * 100).toFixed(1)}%` : "--"}
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-3 font-mono text-[11px] text-[#5B6472]">
-                              {det.bbox
-                                ? `[${det.bbox.map((n: number) => Math.round(n)).join(", ")}]`
-                                : "--"}
-                            </td>
-                            <td className="py-2.5 px-3 font-mono text-[11px] text-[#111827]">
-                              {det.track_id !== undefined ? `#${det.track_id}` : "--"}
-                            </td>
-                          </tr>
-                        ))}
+                        {record.sample_detections.map((det: any, idx: number) => {
+                          const coords = det.debris_coordinates;
+                          const lat = coords?.latitude ?? det.latitude;
+                          const lon = coords?.longitude ?? det.longitude;
+                          const unc = coords?.uncertainty_m ?? det.coordinate_uncertainty_m;
+                          const st = (coords?.status ?? det.coordinate_status ?? "unavailable").toLowerCase();
+                          const hasCoords = typeof lat === "number" && typeof lon === "number" && !isNaN(lat) && !isNaN(lon) && st !== "unavailable";
+
+                          return (
+                            <tr key={idx} className="hover:bg-[#F0F6FF]">
+                              <td className="py-2.5 px-3 font-mono text-[#5B6472]">
+                                Frame {det.frame !== undefined ? det.frame : "--"}
+                              </td>
+                              <td className="py-2.5 px-3 font-bold text-[#111827]">
+                                {det.class_name}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span className="font-mono font-bold text-[#0066FF]">
+                                  {det.confidence ? `${(det.confidence * 100).toFixed(1)}%` : "--"}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-[11px] text-[#5B6472]">
+                                {det.bbox
+                                  ? `[${det.bbox.map((n: number) => Math.round(n)).join(", ")}]`
+                                  : "--"}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-[11px] text-[#111827]">
+                                {det.track_id !== undefined ? `#${det.track_id}` : "--"}
+                              </td>
+                              <td className="py-2.5 px-3 text-[11px]">
+                                {hasCoords ? (
+                                  <div className="flex items-center space-x-1.5">
+                                    <span className="font-bold text-[#111827]">
+                                      {lat.toFixed(5)}°, {lon.toFixed(5)}°
+                                    </span>
+                                    <span
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${
+                                        st === "verified"
+                                          ? "bg-emerald-50 text-emerald-700 border-emerald-300"
+                                          : "bg-sky-50 text-[#0066FF] border-sky-300"
+                                      }`}
+                                    >
+                                      ±{(unc ?? 1.5).toFixed(1)}m
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-[#5B6472] italic text-[10px]">
+                                    {coords?.formatted || "Unavailable"}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-right">
+                                <button
+                                  onClick={() => setSelectedDebrisForMap(det)}
+                                  className="px-2 py-0.5 rounded text-[10px] bg-[#F5F7FA] hover:bg-[#EAF3FF] hover:text-[#0066FF] border border-[#D9DEE7] text-[#5B6472] font-semibold inline-flex items-center space-x-1"
+                                  title="View on Map"
+                                >
+                                  <MapPin className="w-3 h-3 text-[#0066FF]" />
+                                  <span>Map</span>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -598,6 +644,14 @@ export default function HistoryDetailPage() {
               </div>
             </div>
           )}
+
+          {/* Reusable Debris Location Map Modal (FR-08) */}
+          <DebrisLocationMapModal
+            isOpen={!!selectedDebrisForMap}
+            onClose={() => setSelectedDebrisForMap(null)}
+            detection={selectedDebrisForMap}
+            droneTelemetry={record?.drone_telemetry}
+          />
         </main>
       </div>
     </div>

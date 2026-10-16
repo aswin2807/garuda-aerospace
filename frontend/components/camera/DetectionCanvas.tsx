@@ -8,6 +8,7 @@ interface DetectionCanvasProps {
   videoHeight: number;
   containerWidth: number;
   containerHeight: number;
+  roiPolygon?: number[][];
 }
 
 export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
@@ -15,6 +16,7 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
   videoHeight,
   containerWidth,
   containerHeight,
+  roiPolygon,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const detections = useDroneStore((s) => s.detections);
@@ -41,59 +43,32 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
       const scaleX = canvas.width / videoWidth;
       const scaleY = canvas.height / videoHeight;
 
-      // Draw Tactical Center Reticle (PRD Section 10)
-      const cx = canvas.width / 2;
-      const cy = canvas.height / 2;
-      ctx.strokeStyle = "rgba(0, 102, 255, 0.4)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(cx - 30, cy);
-      ctx.lineTo(cx + 30, cy);
-      ctx.moveTo(cx, cy - 30);
-      ctx.lineTo(cx, cy + 30);
-      ctx.stroke();
+      // 3. Draw Runway Pathway ROI if provided (PRD Section 4.5)
+      if (roiPolygon && roiPolygon.length >= 3) {
+        ctx.save();
+        ctx.beginPath();
+        roiPolygon.forEach(([nx, ny], idx) => {
+          const px = nx * canvas.width;
+          const py = ny * canvas.height;
+          if (idx === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.closePath();
+        ctx.strokeStyle = "rgba(245, 158, 11, 0.85)"; // Amber / Gold boundary
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(245, 158, 11, 0.06)";
+        ctx.fill();
 
-      // Small central circle
-      ctx.beginPath();
-      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
+        // Label
+        ctx.font = "bold 10px Inter, system-ui, sans-serif";
+        ctx.fillStyle = "rgba(245, 158, 11, 0.95)";
+        ctx.fillText("RUNWAY PATHWAY ROI", 12, 20);
+        ctx.restore();
+      }
 
-      // Tactical Aviation Corner Brackets (PRD Section 10)
-      const bracketLen = 16;
-      ctx.strokeStyle = "rgba(0, 140, 255, 0.6)";
-      ctx.lineWidth = 1.5;
-
-      // Top-Left
-      ctx.beginPath();
-      ctx.moveTo(10, 10 + bracketLen);
-      ctx.lineTo(10, 10);
-      ctx.lineTo(10 + bracketLen, 10);
-      ctx.stroke();
-
-      // Top-Right
-      ctx.beginPath();
-      ctx.moveTo(canvas.width - 10 - bracketLen, 10);
-      ctx.lineTo(canvas.width - 10, 10);
-      ctx.lineTo(canvas.width - 10, 10 + bracketLen);
-      ctx.stroke();
-
-      // Bottom-Left
-      ctx.beginPath();
-      ctx.moveTo(10, canvas.height - 10 - bracketLen);
-      ctx.lineTo(10, canvas.height - 10);
-      ctx.lineTo(10 + bracketLen, canvas.height - 10);
-      ctx.stroke();
-
-      // Bottom-Right
-      ctx.beginPath();
-      ctx.moveTo(canvas.width - 10 - bracketLen, canvas.height - 10);
-      ctx.lineTo(canvas.width - 10, canvas.height - 10);
-      ctx.lineTo(canvas.width - 10, canvas.height - 10 - bracketLen);
-      ctx.stroke();
-
-      // 3. Draw Bounding Boxes
+      // 4. Draw Bounding Boxes (Clean overlay without unnecessary reticles, grid lines, or separators - PRD Section 2.1)
       detections.forEach((det) => {
         if (det.confidence < confidenceThreshold) return;
 
@@ -124,71 +99,61 @@ export const DetectionCanvas: React.FC<DetectionCanvasProps> = ({
         const drawW = w * scaleX;
         const drawH = h * scaleY;
 
-        // Aviation Black, White & Blue Box Theme (PRD Section 9)
-        const primaryColor = "#0066FF";
-        const brightColor = "#008CFF";
+        if (drawW <= 0 || drawH <= 0) return;
 
-        // Thin blue bounding box
+        // Classify & Color: LIGHT ON (Emerald Green), LIGHT OFF (Crimson Red) (PRD Section 2.3)
+        const rawClass = (det.class_name || "OBJECT").toUpperCase();
+        const state = (det.state || "").toUpperCase();
+        const isLightOn = rawClass.includes("LIGHT ON") || state === "ON";
+        const isLightOff = rawClass.includes("LIGHT OFF") || state === "OFF" || state === "OFF-GAP";
+        const isFod = rawClass.includes("FOD") || (det as any).model === "fod";
+
+        let primaryColor = "#22C55E"; // Emerald Green (#22C55E)
+        let displayName = "LIGHT ON";
+
+        if (isLightOff) {
+          primaryColor = "#EF4444"; // Crimson Red (#EF4444)
+          displayName = "LIGHT OFF";
+        } else if (isLightOn) {
+          primaryColor = "#22C55E";
+          displayName = "LIGHT ON";
+        } else if (isFod) {
+          primaryColor = "#DC2626";
+          displayName = "FOD";
+        } else {
+          primaryColor = "#3B82F6";
+          displayName = rawClass;
+        }
+
+        // Clean bounding box
         ctx.strokeStyle = primaryColor;
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 2;
         ctx.strokeRect(drawX, drawY, drawW, drawH);
 
-        // Aviation corner accents on detection box
-        const cornerSize = Math.min(8, Math.min(drawW, drawH) / 3);
-        ctx.strokeStyle = brightColor;
-        ctx.lineWidth = 2;
-
-        // Top-left
-        ctx.beginPath();
-        ctx.moveTo(drawX, drawY + cornerSize);
-        ctx.lineTo(drawX, drawY);
-        ctx.lineTo(drawX + cornerSize, drawY);
-        ctx.stroke();
-
-        // Top-right
-        ctx.beginPath();
-        ctx.moveTo(drawX + drawW - cornerSize, drawY);
-        ctx.lineTo(drawX + drawW, drawY);
-        ctx.lineTo(drawX + drawW, drawY + cornerSize);
-        ctx.stroke();
-
-        // Bottom-left
-        ctx.beginPath();
-        ctx.moveTo(drawX, drawY + drawH - cornerSize);
-        ctx.lineTo(drawX, drawY + drawH);
-        ctx.lineTo(drawX + cornerSize, drawY + drawH);
-        ctx.stroke();
-
-        // Bottom-right
-        ctx.beginPath();
-        ctx.moveTo(drawX + drawW - cornerSize, drawY + drawH);
-        ctx.lineTo(drawX + drawW, drawY + drawH);
-        ctx.lineTo(drawX + drawW, drawY + drawH - cornerSize);
-        ctx.stroke();
-
-        // Label Badge
-        const className = (det.class_name || "OBJECT").toUpperCase();
+        // Concise, uncluttered label format (PRD Section 2.2): "LIGHT ON · 94%" or "LIGHT OFF · 91%"
         const confPct = Math.round(det.confidence * 100);
-        const labelText = det.track_id !== undefined
-          ? `${className} #${det.track_id} ${confPct}%`
-          : `${className} ${confPct}%`;
+        const labelText = `${displayName} · ${confPct}%`;
 
-        ctx.font = "bold 10px monospace";
+        ctx.font = "bold 11px Inter, system-ui, sans-serif";
         const textMetrics = ctx.measureText(labelText);
         const textWidth = textMetrics.width;
-        const badgeHeight = 16;
-        const badgeY = Math.max(0, drawY - badgeHeight - 2);
+        const badgeHeight = 18;
+        const badgeWidth = textWidth + 10;
 
-        // Badge background: dark black with thin blue border
-        ctx.fillStyle = "rgba(0, 0, 0, 0.85)";
-        ctx.fillRect(drawX, badgeY, textWidth + 8, badgeHeight);
-        ctx.strokeStyle = primaryColor;
+        // Smart positioning: above box if space permits, else below box (PRD Section 2.2)
+        const badgeY = drawY >= badgeHeight + 4 ? drawY - badgeHeight - 2 : Math.min(canvas.height - badgeHeight - 2, drawY + drawH + 2);
+        const badgeX = Math.max(2, Math.min(drawX, canvas.width - badgeWidth - 2));
+
+        // Solid badge background matching bounding box
+        ctx.fillStyle = primaryColor;
+        ctx.fillRect(badgeX, badgeY, badgeWidth, badgeHeight);
+        ctx.strokeStyle = "rgba(18, 18, 18, 0.85)";
         ctx.lineWidth = 1;
-        ctx.strokeRect(drawX, badgeY, textWidth + 8, badgeHeight);
+        ctx.strokeRect(badgeX, badgeY, badgeWidth, badgeHeight);
 
-        // Badge text: white with blue highlight
+        // Badge text: crisp white
         ctx.fillStyle = "#FFFFFF";
-        ctx.fillText(labelText, drawX + 4, badgeY + 12);
+        ctx.fillText(labelText, badgeX + 5, badgeY + 13);
       });
 
       animationFrameId = requestAnimationFrame(render);

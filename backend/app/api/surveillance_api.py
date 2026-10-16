@@ -58,6 +58,32 @@ def start_live_surveillance(req: LiveSurveillanceStartRequest):
         is_simulated=is_sim
     )
 
+    try:
+        from datetime import datetime, timezone
+        from backend.app.services.central_results_service import central_results_service
+        from backend.app.schemas.results import SurveillanceSessionCreate, AnalysisResultCreate
+        central_results_service.create_surveillance_session(SurveillanceSessionCreate(
+            id=cam_id,
+            mode="live",
+            camera_id=cam_id,
+            source_reference=target_url,
+            status="active",
+            metadata_json={"model_type": selected_model, "is_simulated": is_sim}
+        ))
+        live_res_id = f"live_{cam_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        central_results_service.create_result(AnalysisResultCreate(
+            id=live_res_id,
+            module_type="live_surveillance",
+            session_id=cam_id,
+            title=f"Live Surveillance: {req.camera_name or cam_id}",
+            status="processing",
+            summary=f"Active real-time surveillance feed via {selected_model} model.",
+            media_reference=target_url,
+            result_data={"camera_id": cam_id, "model_type": selected_model, "is_simulated": is_sim}
+        ))
+    except Exception as e:
+        pass
+
     return {
         "success": True,
         "session_id": cam_id,
@@ -80,6 +106,26 @@ def stop_live_surveillance(req: LiveSurveillanceStopRequest):
         raise HTTPException(status_code=400, detail="Missing session_id or camera_id")
 
     success = camera_service.disconnect_camera(target_id)
+    try:
+        from backend.app.db.database import SessionLocal
+        from backend.app.db.models import AnalysisResult, SurveillanceSessionRecord, get_utc_now
+        with SessionLocal() as db:
+            sess = db.query(SurveillanceSessionRecord).filter(SurveillanceSessionRecord.id == target_id).first()
+            if sess:
+                sess.status = "completed"
+                sess.ended_at = get_utc_now()
+            results = db.query(AnalysisResult).filter(
+                AnalysisResult.session_id == target_id,
+                AnalysisResult.status == "processing"
+            ).all()
+            for r in results:
+                r.status = "completed"
+                r.completed_at = get_utc_now()
+                r.summary = f"Live surveillance session {target_id} ended."
+            db.commit()
+    except Exception:
+        pass
+
     return {
         "success": success,
         "session_id": target_id,
@@ -93,13 +139,7 @@ def stop_live_surveillance_by_id(session_id: str):
     """
     Stops live surveillance by path session_id.
     """
-    success = camera_service.disconnect_camera(session_id)
-    return {
-        "success": success,
-        "session_id": session_id,
-        "status": "DISCONNECTED",
-        "message": "Live surveillance stopped successfully"
-    }
+    return stop_live_surveillance(LiveSurveillanceStopRequest(session_id=session_id))
 
 
 @router.get("/live/{session_id}/status")
@@ -199,6 +239,33 @@ def start_offline_analysis(job_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to start offline analysis: {e}")
 
 
+@router.post("/offline/{job_id}/pause")
+def pause_offline_analysis(job_id: str):
+    """Pauses active offline surveillance analysis."""
+    try:
+        return analysis_service.pause_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/offline/{job_id}/resume")
+def resume_offline_analysis(job_id: str):
+    """Resumes paused offline surveillance analysis."""
+    try:
+        return analysis_service.resume_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/offline/{job_id}/cancel")
+def cancel_offline_analysis(job_id: str):
+    """Cancels offline surveillance analysis."""
+    try:
+        return analysis_service.cancel_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.get("/offline/{job_id}/status")
 def get_offline_analysis_status(job_id: str):
     """
@@ -295,4 +362,3 @@ def list_offline_jobs(limit: int = 50, analysis_type: Optional[str] = None):
     Lists recent offline surveillance jobs.
     """
     return analysis_service.list_jobs(limit=limit, analysis_type=analysis_type)
-

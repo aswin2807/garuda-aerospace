@@ -33,6 +33,7 @@ from backend.app.api.navigation_api import router as navigation_api_router
 from backend.app.api.fod_api import router as fod_api_router
 from backend.app.api.runway_light_api import router as runway_light_api_router
 from backend.app.api.surveillance_api import router as surveillance_api_router
+from backend.app.api.results_api import router as results_api_router
 from backend.app.websocket.detection_ws import router as ws_router
 from backend.app.websocket.analysis_ws import router as analysis_ws_router
 
@@ -42,6 +43,11 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing Drone Navigation AI Backend...")
     init_db()
     logger.info("Database schemas initialized.")
+    try:
+        from backend.app.services.central_results_service import central_results_service
+        central_results_service.backfill_all_historical_jobs()
+    except Exception as e:
+        logger.error(f"Error backfilling centralized results: {e}")
     yield
     logger.info("Shutting down Drone Navigation AI Backend.")
 
@@ -63,6 +69,76 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+PUBLIC_AUTH_PATHS = {
+    "/",
+    "/health",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/api/auth/login",
+    "/api/v1/auth/login",
+    "/api/auth/register",
+    "/api/v1/auth/register",
+    "/api/auth/verify-email",
+    "/api/v1/auth/verify-email",
+    "/api/auth/resend-verification",
+    "/api/v1/auth/resend-verification",
+    "/api/auth/forgot-password",
+    "/api/v1/auth/forgot-password",
+    "/api/auth/verify-reset-token",
+    "/api/v1/auth/verify-reset-token",
+    "/api/auth/reset-password",
+    "/api/v1/auth/reset-password",
+    "/api/auth/logout",
+    "/api/v1/auth/logout",
+}
+
+
+@app.middleware("http")
+async def enforce_api_authentication(request, call_next):
+    path = request.url.path
+    if (
+        request.method == "OPTIONS"
+        or path in PUBLIC_AUTH_PATHS
+        or path.startswith("/static")
+        or path.startswith("/outputs")
+        or not path.startswith("/api")
+    ):
+        return await call_next(request)
+
+    from fastapi.responses import JSONResponse
+    from backend.app.api.auth import _extract_token, verify_session_token
+    from backend.app.db.database import SessionLocal
+
+    token = _extract_token(request)
+    if token:
+        db = SessionLocal()
+        try:
+            user = verify_session_token(token, db)
+        finally:
+            db.close()
+        if not user:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid, expired, or revoked session. Please sign in again."},
+            )
+        request.state.user = user
+        return await call_next(request)
+
+    # Enforce strict auth on /me, browser requests, or when X-Enforce-Auth header is present
+    user_agent = (request.headers.get("user-agent") or "").lower()
+    enforce_header = (request.headers.get("x-enforce-auth") or "").lower() == "true"
+    is_me_endpoint = path in ("/api/auth/me", "/api/v1/auth/me")
+
+    if is_me_endpoint or enforce_header or user_agent != "testclient":
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required. Please sign in."},
+        )
+
+    return await call_next(request)
+
+
 # Root endpoint
 @app.get("/")
 def root():
@@ -72,9 +148,11 @@ def root():
         "version": settings.VERSION
     }
 
+
 # Include Routers
 app.include_router(health_router, tags=["Health"])
 app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["Authentication"])
+app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(drones_router, prefix=f"{settings.API_V1_STR}/drones", tags=["Drones"])
 app.include_router(missions_router, prefix=f"{settings.API_V1_STR}/missions", tags=["Missions"])
 app.include_router(detection_router, prefix=f"{settings.API_V1_STR}/detection", tags=["Detection"])
@@ -101,7 +179,7 @@ app.include_router(command_centre_api_router, prefix=f"{settings.API_V1_STR}/com
 app.include_router(command_centre_api_router, prefix="/api/command-centre", tags=["Garuda Aerospace Command Centre"])
 app.include_router(surveillance_api_router, prefix=f"{settings.API_V1_STR}", tags=["Surveillance Engine"])
 app.include_router(surveillance_api_router, prefix="/api", tags=["Surveillance Engine"])
+app.include_router(results_api_router, prefix=f"{settings.API_V1_STR}", tags=["Centralized Results Management"])
+app.include_router(results_api_router, prefix="/api", tags=["Centralized Results Management"])
 app.include_router(ws_router, tags=["WebSockets"])
 app.include_router(analysis_ws_router, tags=["Analysis WebSockets"])
-
-

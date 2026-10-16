@@ -1,6 +1,18 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
+class DebrisCoordinates(BaseModel):
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    crs: str = "WGS84"
+    uncertainty_m: Optional[float] = None
+    status: str = "unavailable"  # "estimated", "verified", "unavailable"
+    method: Optional[str] = "none"
+    formatted: Optional[str] = None
+    source_note: Optional[str] = None
+    ground_point_pixels: Optional[List[float]] = None
+
+
 class AnalysisJobCreateResponse(BaseModel):
     id: Optional[str] = None
     job_id: str

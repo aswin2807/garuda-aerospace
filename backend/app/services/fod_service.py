@@ -39,6 +39,7 @@ class FODService:
         self.iou: float = settings.IOU_THRESHOLD
         self.imgsz: int = getattr(settings, "FOD_IMGSZ", 640)
         self.error: Optional[str] = None
+        self.last_roi_result: Dict[str, Any] = {}
         self.load_model()
 
     def get_optimal_device(self) -> str:
@@ -101,10 +102,16 @@ class FODService:
         conf: Optional[float] = None,
         iou: Optional[float] = None,
         imgsz: Optional[int] = None,
+        roi_polygon: Optional[Any] = None,
+        source_id: Optional[str] = None,
+        camera_id: Optional[str] = None,
+        boundary_rule: Optional[str] = None,
+        filter_pathway: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Runs hardware-accelerated inference for FOD detection.
-        Returns list of detections with normalized schema:
+        Constrains accepted debris predictions to the configured runway pathway ROI (PRD Section 2 & 4).
+        Returns list of verified in-pathway detections with normalized schema:
         {
             "model": "fod",
             "class_id": 0,
@@ -113,7 +120,9 @@ class FODService:
             "bbox": [x1, y1, x2, y2],
             "bbox_dict": {"x1": ..., "y1": ..., "x2": ..., "y2": ...},
             "xyxy": [x1, y1, x2, y2],
-            "bbox_xywh": [x, y, w, h]
+            "bbox_xywh": [x, y, w, h],
+            "in_pathway": True,
+            "roi_status": "INSIDE" | "BOUNDARY_ACCEPTED"
         }
         """
         if frame is None or frame.size == 0 or not self.loaded or self.model is None:
@@ -123,7 +132,7 @@ class FODService:
         i = iou if iou is not None else self.iou
         sz = imgsz if imgsz is not None else self.imgsz
         h, w = frame.shape[:2]
-        detections: List[Dict[str, Any]] = []
+        candidates: List[Dict[str, Any]] = []
 
         if ULTRALYTICS_AVAILABLE and hasattr(self.model, "predict"):
             try:
@@ -150,7 +159,7 @@ class FODService:
                                 # Reject full-frame ground hallucination per PRD Section 1.2 & 4.3
                                 continue
 
-                            detections.append({
+                            candidates.append({
                                 "model": "fod",
                                 "class_id": cls_id,
                                 "class_name": cls_name,
@@ -173,6 +182,26 @@ class FODService:
             except Exception as e:
                 logger.error(f"[FOD_SERVICE] Inference error: {e}")
 
-        return detections
+        # Enforce Runway Pathway ROI constraint (PRD Section 2, 4.2 & 4.3)
+        if filter_pathway and candidates:
+            from backend.app.services.runway_roi_service import runway_roi_service
+            roi_res = runway_roi_service.filter_debris_detections(
+                detections=candidates,
+                frame_shape=(h, w),
+                roi_polygon=roi_polygon,
+                source_id=source_id,
+                camera_id=camera_id,
+                boundary_rule=boundary_rule,
+            )
+            self.last_roi_result = roi_res
+            return roi_res["valid_detections"]
+        else:
+            self.last_roi_result = {
+                "valid_detections": candidates,
+                "filtered_out_detections": [],
+                "roi_info": {"status": "UNFILTERED"},
+                "counts": {"in_pathway": len(candidates), "outside_pathway": 0, "total_candidates": len(candidates)}
+            }
+            return candidates
 
 fod_service = FODService()

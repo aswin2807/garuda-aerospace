@@ -17,11 +17,28 @@ from backend.app.db.models import Camera
 
 from backend.app.services.frame_processor import frame_processor
 
+import uuid
+from datetime import datetime, timezone
+
+def sanitize_stream_url(url: str) -> str:
+    """Masks credentials in RTSP / HTTP stream URLs to prevent leaking passwords in logs and UI."""
+    if not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.password:
+            netloc = parsed.netloc.replace(f":{parsed.password}@", ":****@")
+            return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    except Exception:
+        pass
+    return url
+
 class ActiveCameraStream:
     """
     Manages a single active IP/RTSP camera stream session:
     - Runs LatestFrameReader to prevent backlog and minimize latency
-    - Executes YOLOv11 tri-model inference via FrameProcessor
+    - Executes YOLOv11 inference via FrameProcessor
+    - Maintains flight session lifecycle (flight_id, flight_status, pre_landing_summary)
     - Maintains latest frame buffer, FPS counters, and image quality metrics
     """
     def __init__(
@@ -30,13 +47,28 @@ class ActiveCameraStream:
         stream_url: str,
         camera_name: str = "IP Camera 01",
         is_simulated: bool = False,
-        max_retries: int = 5
+        max_retries: int = 5,
+        flight_id: Optional[str] = None
     ):
         self.camera_id = camera_id
         self.camera_name = camera_name
         self.stream_url = stream_url
+        self.sanitized_url = sanitize_stream_url(stream_url)
         self.is_simulated = is_simulated or "demo://" in stream_url.lower() or "simulated" in stream_url.lower()
         self.max_retries = max_retries
+
+        # Flight Lifecycle Tracking (FR-02, FR-04, FR-06)
+        self.flight_id = flight_id or f"FLIGHT-{time.strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+        self.flight_status = "FLYING"  # FLYING, ANALYSIS_ACTIVE, COMPLETED, ERROR
+        self.flight_start_time = time.time()
+        self.flight_end_time: Optional[float] = None
+        self.frames_analyzed = 0
+        self.first_detection_time: Optional[float] = None
+        self.last_detection_time: Optional[float] = None
+        self.latest_detected_object: Optional[str] = None
+        self.latest_confidence: float = 0.0
+        self.confidence_history: List[float] = []
+        self.pre_landing_summary: Dict[str, Any] = {}
 
         self.status = "CONNECTING"  # CONNECTING, CONNECTED, DISCONNECTED, RECONNECTING, ERROR
         self.error: Optional[str] = None
@@ -76,11 +108,86 @@ class ActiveCameraStream:
             self.reader.stop()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
-        self.status = "DISCONNECTED"
+        with self._lock:
+            self.status = "DISCONNECTED"
+            if self.flight_status != "COMPLETED":
+                self.flight_status = "COMPLETED"
+                self.flight_end_time = time.time()
+                self.pre_landing_summary = self._build_pre_landing_summary_locked()
         logger.info(f"[CAMERA] Stopped stream pipeline for {self.camera_id}")
 
+    def complete_flight(self) -> Dict[str, Any]:
+        """Finalizes flight session before landing and compiles the consolidated summary (FR-06)."""
+        with self._lock:
+            self.flight_status = "COMPLETED"
+            self.flight_end_time = time.time()
+            summary = self._build_pre_landing_summary_locked()
+            self.pre_landing_summary = summary
+        logger.info(f"[CAMERA] Completed flight {self.flight_id} for {self.camera_id}")
+        return summary
+
+    def _build_pre_landing_summary_locked(self) -> Dict[str, Any]:
+        """Builds consolidated pre-landing summary while lock is held."""
+        min_conf = round(float(min(self.confidence_history)), 3) if self.confidence_history else 0.0
+        max_conf = round(float(max(self.confidence_history)), 3) if self.confidence_history else 0.0
+        avg_conf = (
+            round(float(np.mean(self.confidence_history)), 3)
+            if self.confidence_history
+            else round(self.average_confidence, 3)
+        )
+        duration = (
+            round(time.time() - self.flight_start_time, 1)
+            if not self.flight_end_time
+            else round(self.flight_end_time - self.flight_start_time, 1)
+        )
+
+        first_det_iso = (
+            datetime.fromtimestamp(self.first_detection_time, tz=timezone.utc).isoformat()
+            if self.first_detection_time
+            else None
+        )
+        last_det_iso = (
+            datetime.fromtimestamp(self.last_detection_time, tz=timezone.utc).isoformat()
+            if self.last_detection_time
+            else None
+        )
+
+        # Summary status: READY once frames have been analyzed, or PENDING if aborted/ended before processing
+        summary_status = "READY" if self.frames_analyzed > 0 else "PENDING"
+        if self.flight_status == "COMPLETED" and self.frames_analyzed == 0:
+            summary_status = "PENDING"
+
+        total_unique = self.latest_session_totals.get("total_unique", 0)
+        if total_unique == 0 and (self.latest_counts.get("light_on", 0) > 0 or self.latest_counts.get("light_off", 0) > 0):
+            total_unique = self.latest_counts.get("light_on", 0) + self.latest_counts.get("light_off", 0)
+
+        return {
+            "flight_id": self.flight_id,
+            "camera_id": self.camera_id,
+            "flight_status": self.flight_status,
+            "camera_status": self.status,
+            "summary_status": summary_status,
+            "total_unique_objects": total_unique,
+            "light_on_count": self.latest_session_totals.get("light_on", self.latest_counts.get("light_on", 0)),
+            "light_off_count": self.latest_session_totals.get("light_off", self.latest_counts.get("light_off", 0)),
+            "min_confidence": min_conf,
+            "avg_confidence": avg_conf,
+            "max_confidence": max_conf,
+            "frames_analyzed": self.frames_analyzed,
+            "flight_duration_sec": duration,
+            "first_detection_time": first_det_iso,
+            "last_detection_time": last_det_iso,
+            "latest_detected_object": self.latest_detected_object,
+            "latest_confidence": round(self.latest_confidence, 3),
+            "model": "runway_light_best.pt"
+        }
+
+    def get_pre_landing_summary(self) -> Dict[str, Any]:
+        with self._lock:
+            return self._build_pre_landing_summary_locked()
+
     def _run_inference_worker(self):
-        logger.info(f"[CAMERA] Initializing LatestFrameReader for {self.camera_id}: {self.stream_url}")
+        logger.info(f"[CAMERA] Initializing LatestFrameReader for {self.camera_id}: {self.sanitized_url}")
         try:
             self.reader = LatestFrameReader(self.stream_url, is_simulated=self.is_simulated).start()
             # Wait briefly for first frame
@@ -94,7 +201,7 @@ class ActiveCameraStream:
                 time.sleep(0.05)
 
             if first_frame is None and not self.is_simulated:
-                raise RuntimeError(f"Connected to RTSP but no video frame received from {self.stream_url}")
+                raise RuntimeError(f"Connected to RTSP but no video frame received from {self.sanitized_url}")
 
             w, h, reported_fps = self.reader.get_properties()
             with self._lock:
@@ -110,6 +217,7 @@ class ActiveCameraStream:
             logger.error(f"[CAMERA] Failed to connect to stream {self.camera_id}: {e}")
             with self._lock:
                 self.status = "ERROR"
+                self.flight_status = "ERROR"
                 self.error = str(e)
             return
 
@@ -148,7 +256,7 @@ class ActiveCameraStream:
                 ret, jpeg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                 clean_jpeg_bytes = jpeg.tobytes() if ret else None
 
-                # Encode annotated frame with color-coded boxes & labels per PRD Section 26
+                # Encode annotated frame with color-coded boxes & labels
                 annotated = inference_service.draw_detections(frame, res.get("detections", []))
                 ret_ann, ann_jpeg = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                 ann_jpeg_bytes = ann_jpeg.tobytes() if ret_ann else clean_jpeg_bytes
@@ -158,8 +266,25 @@ class ActiveCameraStream:
 
                 with self._lock:
                     self.status = "CONNECTED"
+                    if self.flight_status == "FLYING":
+                        self.flight_status = "ANALYSIS_ACTIVE"
+                    self.frames_analyzed += 1
                     self.latest_detections = res.get("detections", [])
                     self.total_detections = res.get("total_objects", len(self.latest_detections))
+
+                    if self.latest_detections:
+                        now_det = time.time()
+                        if self.first_detection_time is None:
+                            self.first_detection_time = now_det
+                        self.last_detection_time = now_det
+                        primary_det = self.latest_detections[0]
+                        self.latest_detected_object = str(primary_det.get("class_name", "UNKNOWN")).upper()
+                        self.latest_confidence = float(primary_det.get("confidence", 0.0))
+                        for d in self.latest_detections:
+                            conf = float(d.get("confidence", 0.0))
+                            if conf > 0:
+                                self.confidence_history.append(conf)
+
                     self.alerts = res.get("alerts", [])
                     self.latest_alerts = res.get("alerts", [])
                     self.latest_counts = counts
@@ -177,6 +302,7 @@ class ActiveCameraStream:
                     self.latest_frame_id = frame_id
                     self.latest_frame_jpeg = clean_jpeg_bytes
                     self.latest_annotated_jpeg = ann_jpeg_bytes
+                    self.pre_landing_summary = self._build_pre_landing_summary_locked()
 
             except Exception as e:
                 logger.error(f"[INFERENCE] Error in frame worker for {self.camera_id}: {e}")
@@ -186,9 +312,16 @@ class ActiveCameraStream:
 
     def get_latest_data(self) -> Dict[str, Any]:
         with self._lock:
+            last_det_str = (
+                datetime.fromtimestamp(self.last_detection_time, tz=timezone.utc).isoformat()
+                if self.last_detection_time
+                else None
+            )
             return {
                 "camera_id": self.camera_id,
                 "camera_name": self.camera_name,
+                "flight_id": self.flight_id,
+                "flight_status": self.flight_status,
                 "status": self.status,
                 "width": self.width,
                 "height": self.height,
@@ -205,10 +338,15 @@ class ActiveCameraStream:
                 "counts": dict(self.latest_counts),
                 "session_totals": dict(self.latest_session_totals),
                 "average_confidence": self.average_confidence,
+                "latest_detected_object": self.latest_detected_object,
+                "latest_confidence": self.latest_confidence,
+                "last_detection_time": last_det_str,
+                "frames_analyzed": self.frames_analyzed,
                 "summary": dict(self.latest_summary),
-                "model": "navigation_best.pt + FOD_Karhtikeyan.pt + runway_light_best.pt",
+                "pre_landing_summary": self._build_pre_landing_summary_locked(),
+                "model": "runway_light_best.pt",
                 "frame_id": self.latest_frame_id,
-                "stream_url": self.stream_url,
+                "stream_url": self.sanitized_url,
                 "error": self.error
             }
 
@@ -220,6 +358,7 @@ class ActiveCameraStream:
 class CameraService:
     def __init__(self):
         self.active_streams: Dict[str, ActiveCameraStream] = {}
+        self.recent_flight_summaries: Dict[str, Dict[str, Any]] = {}
 
     def validate_input(
         self,
@@ -295,7 +434,7 @@ class CameraService:
             with socket.create_connection((host, port), timeout=timeout):
                 return True, f"Host {host}:{port} reachable"
         except socket.timeout:
-            return False, f"Camera cannot be reached: Connection timed out reaching {stream_url} (timeout={timeout}s)"
+            return False, f"Camera cannot be reached: Connection timed out reaching {sanitize_stream_url(stream_url)} (timeout={timeout}s)"
         except ConnectionRefusedError:
             return False, f"Camera cannot be reached: Connection refused on port {port}. Verify camera RTSP server is active."
         except Exception as e:
@@ -306,7 +445,8 @@ class CameraService:
         camera_id: str,
         stream_url: str,
         camera_name: str = "IP Camera 01",
-        is_simulated: bool = False
+        is_simulated: bool = False,
+        flight_id: Optional[str] = None
     ) -> ActiveCameraStream:
         """
         Connects to a camera stream and registers it in the database and active memory.
@@ -318,7 +458,8 @@ class CameraService:
             camera_id=camera_id,
             stream_url=stream_url,
             camera_name=camera_name,
-            is_simulated=is_simulated
+            is_simulated=is_simulated,
+            flight_id=flight_id
         )
         self.active_streams[camera_id] = stream
         stream.start()
@@ -327,10 +468,8 @@ class CameraService:
         try:
             db = SessionLocal()
             cam = db.query(Camera).filter(Camera.camera_id == camera_id).first()
+            sanitized_url = sanitize_stream_url(stream_url)
             parsed = urllib.parse.urlparse(stream_url)
-            sanitized_url = stream_url
-            if parsed.password:
-                sanitized_url = stream_url.replace(f":{parsed.password}@", ":****@")
 
             if not cam:
                 cam = Camera(
@@ -359,6 +498,38 @@ class CameraService:
         if camera_id in self.active_streams:
             return self.active_streams[camera_id].get_latest_data()
 
+        # Check recent flight summaries if camera disconnected
+        if camera_id in self.recent_flight_summaries:
+            recent = self.recent_flight_summaries[camera_id]
+            return {
+                "camera_id": camera_id,
+                "camera_name": "Drone Camera",
+                "flight_id": recent.get("flight_id"),
+                "flight_status": recent.get("flight_status", "COMPLETED"),
+                "status": "DISCONNECTED",
+                "width": 1920,
+                "height": 1080,
+                "fps": 0.0,
+                "camera_fps": 0.0,
+                "inference_fps": 0.0,
+                "latency_ms": 0.0,
+                "brightness": None,
+                "sharpness": None,
+                "warnings": [],
+                "total_detections": recent.get("total_unique_objects", 0),
+                "detections": [],
+                "alerts": [],
+                "summary": None,
+                "latest_detected_object": recent.get("latest_detected_object"),
+                "latest_confidence": recent.get("latest_confidence"),
+                "last_detection_time": recent.get("last_detection_time"),
+                "frames_analyzed": recent.get("frames_analyzed", 0),
+                "pre_landing_summary": recent,
+                "model": "runway_light_best.pt",
+                "stream_url": "",
+                "error": None
+            }
+
         # Check DB
         try:
             db = SessionLocal()
@@ -368,6 +539,8 @@ class CameraService:
                 return {
                     "camera_id": cam.camera_id,
                     "camera_name": cam.camera_name,
+                    "flight_id": None,
+                    "flight_status": "COMPLETED",
                     "status": "DISCONNECTED",
                     "width": 1920,
                     "height": 1080,
@@ -380,6 +553,14 @@ class CameraService:
                     "warnings": [],
                     "total_detections": 0,
                     "detections": [],
+                    "alerts": [],
+                    "summary": None,
+                    "latest_detected_object": None,
+                    "latest_confidence": None,
+                    "last_detection_time": None,
+                    "frames_analyzed": 0,
+                    "pre_landing_summary": None,
+                    "model": "runway_light_best.pt",
                     "stream_url": cam.stream_url,
                     "error": None
                 }
@@ -388,9 +569,27 @@ class CameraService:
 
         return None
 
+    def complete_flight(self, camera_id: str) -> Optional[Dict[str, Any]]:
+        """Completes the flight session and finalizes the pre-landing summary (FR-06)."""
+        stream = self.active_streams.get(camera_id)
+        if stream:
+            summary = stream.complete_flight()
+            self.recent_flight_summaries[camera_id] = summary
+            return summary
+        return self.recent_flight_summaries.get(camera_id)
+
+    def get_flight_summary(self, camera_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves current or final pre-landing flight summary."""
+        stream = self.active_streams.get(camera_id)
+        if stream:
+            return stream.get_pre_landing_summary()
+        return self.recent_flight_summaries.get(camera_id)
+
     def disconnect_camera(self, camera_id: str) -> bool:
         stream = self.active_streams.pop(camera_id, None)
         if stream:
+            summary = stream.complete_flight()
+            self.recent_flight_summaries[camera_id] = summary
             stream.stop()
 
         try:

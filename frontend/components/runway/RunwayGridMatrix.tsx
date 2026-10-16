@@ -24,7 +24,7 @@ export const RunwayGridMatrix: React.FC<RunwayGridMatrixProps> = ({
   confirmedFaults,
   rowsDetected,
 }) => {
-  const [filter, setFilter] = useState<"ALL" | "FAULTS" | "ON" | "OFF" | "UNKNOWN">("ALL");
+  const [filter, setFilter] = useState<"ALL" | "FAULTS" | "ON" | "OFF">("ALL");
   const [selectedSlot, setSelectedSlot] = useState<RunwayLightSlot | null>(null);
 
   // Group slots by row
@@ -54,7 +54,6 @@ export const RunwayGridMatrix: React.FC<RunwayGridMatrixProps> = ({
   const calcTotal = totalLights ?? matrix.length;
   const calcOn = lightsOn ?? matrix.filter((s) => s.status === "ON").length;
   const calcOff = lightsOff ?? matrix.filter((s) => s.status === "OFF").length;
-  const calcUnknown = lightsUnknown ?? matrix.filter((s) => s.status === "UNKNOWN").length;
   const calcFaults = confirmedFaults ?? faults.length ?? matrix.filter((s) => s.is_confirmed && s.status === "OFF").length;
   const calcRows = rowsDetected ?? sortedRowKeys.length;
 
@@ -63,7 +62,6 @@ export const RunwayGridMatrix: React.FC<RunwayGridMatrixProps> = ({
     if (filter === "FAULTS") return matrix.filter((s) => s.is_confirmed || s.status === "OFF");
     if (filter === "ON") return matrix.filter((s) => s.status === "ON");
     if (filter === "OFF") return matrix.filter((s) => s.status === "OFF");
-    if (filter === "UNKNOWN") return matrix.filter((s) => s.status === "UNKNOWN");
     return matrix;
   }, [matrix, filter]);
 
@@ -101,7 +99,7 @@ export const RunwayGridMatrix: React.FC<RunwayGridMatrixProps> = ({
 
         {/* Filter Tabs */}
         <div className="flex items-center space-x-1.5 text-[11px] bg-[#F5F7FA] border border-[#D9DEE7] rounded-lg p-1">
-          {(["ALL", "FAULTS", "ON", "OFF", "UNKNOWN"] as const).map((tab) => (
+          {(["ALL", "FAULTS", "ON", "OFF"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setFilter(tab)}
@@ -115,7 +113,6 @@ export const RunwayGridMatrix: React.FC<RunwayGridMatrixProps> = ({
               {tab === "FAULTS" && `FAULTS (${calcFaults})`}
               {tab === "ON" && `ON (${calcOn})`}
               {tab === "OFF" && `OFF (${calcOff})`}
-              {tab === "UNKNOWN" && `UNKNOWN (${calcUnknown})`}
             </button>
           ))}
         </div>
@@ -142,9 +139,11 @@ export const RunwayGridMatrix: React.FC<RunwayGridMatrixProps> = ({
         </div>
 
         <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded-lg p-2.5 text-center">
-          <span className="text-[9px] uppercase tracking-wider text-[#5B6472]">UNKNOWN / GAPS</span>
-          <div className="text-base font-extrabold text-amber-600 mt-0.5">{calcUnknown}</div>
-          <span className="text-[9px] text-amber-600 font-semibold">Ambiguous</span>
+          <span className="text-[9px] uppercase tracking-wider text-[#5B6472]">OPERATIONAL RATE</span>
+          <div className="text-base font-extrabold text-emerald-600 mt-0.5">
+            {calcTotal > 0 ? `${Math.round((calcOn / calcTotal) * 100)}%` : "100%"}
+          </div>
+          <span className="text-[9px] text-emerald-600 font-semibold">Array Health</span>
         </div>
 
         <div className="bg-[#F5F7FA] border border-[#D9DEE7] rounded-lg p-2.5 text-center">
@@ -180,7 +179,7 @@ export const RunwayGridMatrix: React.FC<RunwayGridMatrixProps> = ({
                     ROW {rowNum}
                   </span>
                   <span className="text-[11px] text-[#5B6472]">
-                    Total: {rowSlots.length} • ON: {rowSlots.filter((s) => s.status === "ON").length} • OFF: {rowSlots.filter((s) => s.status === "OFF").length} • UNKNOWN: {rowSlots.filter((s) => s.status === "UNKNOWN").length}
+                    Total: {rowSlots.length} • ON: {rowSlots.filter((s) => s.status === "ON").length} • OFF: {rowSlots.filter((s) => s.status === "OFF").length}
                     {rowSlots.some((s) => s.is_confirmed || (s.status === "OFF" && (s.consecutive_off ?? 0) >= 5)) && (
                       <span className="text-red-600 font-semibold ml-1">
                         • {rowSlots.filter((s) => s.is_confirmed || (s.status === "OFF" && (s.consecutive_off ?? 0) >= 5)).length} FAULT(S)

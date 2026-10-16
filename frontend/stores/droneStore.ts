@@ -14,6 +14,7 @@ import {
   SessionTotals,
   PerformanceMetrics,
   PipelineHealth,
+  PreLandingSummary,
 } from "../types/detection";
 import {
   getModelStatus,
@@ -23,6 +24,7 @@ import {
   getCommandCentreTelemetry,
   connectDrone,
   disconnectDrone,
+  completeFlight,
 } from "../lib/api";
 
 
@@ -37,6 +39,14 @@ export interface DroneStoreState {
   fps: number;
   inferenceTimeMs: number;
 
+  // Flight Lifecycle & Live Drone Analysis (FR-02, FR-04, FR-06)
+  flightId: string | null;
+  flightStatus: "FLYING" | "ANALYSIS_ACTIVE" | "COMPLETED" | "ERROR" | string | null;
+  latestDetectedObject: string | null;
+  latestConfidence: number | null;
+  lastDetectionTime: string | null;
+  framesAnalyzed: number;
+  preLandingSummary: PreLandingSummary | null;
 
   // IP Camera Connection State
   activeCameraId: string | null;
@@ -66,6 +76,11 @@ export interface DroneStoreState {
   setConnectionStatus: (status: "CONNECTED" | "CONNECTING" | "DISCONNECTED") => void;
   setConfidenceThreshold: (threshold: number) => void;
   setFps: (fps: number) => void;
+
+  setFlightId: (id: string | null) => void;
+  setFlightStatus: (status: string | null) => void;
+  setPreLandingSummary: (summary: PreLandingSummary | null) => void;
+  completeFlightSession: (cameraId?: string) => Promise<PreLandingSummary | null>;
 
   // Camera Actions
   setActiveCameraId: (id: string | null) => void;
@@ -137,6 +152,15 @@ export const useDroneStore = create<DroneStoreState>((set) => ({
   inferenceTimeMs: 0,
 
 
+  // Flight initial state (FR-02, FR-04, FR-06)
+  flightId: null,
+  flightStatus: "FLYING",
+  latestDetectedObject: null,
+  latestConfidence: null,
+  lastDetectionTime: null,
+  framesAnalyzed: 0,
+  preLandingSummary: null,
+
   // Camera initial state
   activeCameraId: null,
   cameraStatus: "DISCONNECTED",
@@ -187,6 +211,27 @@ export const useDroneStore = create<DroneStoreState>((set) => ({
   setConfidenceThreshold: (confidenceThreshold) => set({ confidenceThreshold }),
   setFps: (fps) => set({ fps }),
 
+  setFlightId: (flightId) => set({ flightId }),
+  setFlightStatus: (flightStatus) => set({ flightStatus }),
+  setPreLandingSummary: (preLandingSummary) => set({ preLandingSummary }),
+  completeFlightSession: async (cameraId?: string) => {
+    try {
+      const targetId = cameraId || (useDroneStore.getState().activeCameraId ?? "camera_01");
+      const res = await completeFlight(targetId);
+      if (res.success && res.summary) {
+        set({
+          flightStatus: "COMPLETED",
+          preLandingSummary: res.summary,
+        });
+        return res.summary;
+      }
+      return null;
+    } catch (err) {
+      console.warn("Failed to complete flight session:", err);
+      return null;
+    }
+  },
+
   // Camera Actions
   setActiveCameraId: (activeCameraId) => set({ activeCameraId }),
   setCameraStatus: (cameraStatus) => set({ cameraStatus }),
@@ -231,6 +276,23 @@ export const useDroneStore = create<DroneStoreState>((set) => ({
         total_detections: detections.length
       };
 
+      const flightId = data.flight_id || state.flightId;
+      const flightStatus = data.flight_status || (data.status === "DISCONNECTED" ? "COMPLETED" : state.flightStatus);
+
+      let latestDetectedObject = state.latestDetectedObject;
+      let latestConfidence = state.latestConfidence;
+      if (data.latest_detected_object !== undefined) {
+        latestDetectedObject = data.latest_detected_object;
+        latestConfidence = data.latest_confidence ?? latestConfidence;
+      } else if (detections.length > 0) {
+        latestDetectedObject = (detections[0].class_name || "UNKNOWN").toUpperCase();
+        latestConfidence = detections[0].confidence;
+      }
+
+      const lastDetectionTime = data.last_detection_time || (detections.length > 0 ? new Date().toISOString() : state.lastDetectionTime);
+      const framesAnalyzed = data.frames_analyzed !== undefined ? data.frames_analyzed : (data.frame_id || state.framesAnalyzed);
+      const preLandingSummary = data.pre_landing_summary || state.preLandingSummary;
+
       return {
         counts,
         sessionTotals,
@@ -239,6 +301,13 @@ export const useDroneStore = create<DroneStoreState>((set) => ({
         alerts,
         videoFrame,
         summary,
+        flightId,
+        flightStatus,
+        latestDetectedObject,
+        latestConfidence,
+        lastDetectionTime,
+        framesAnalyzed,
+        preLandingSummary,
         fps: Math.round(perf.stream_fps || state.fps),
         cameraFps: perf.stream_fps,
         inferenceFps: perf.inference_fps,
@@ -409,4 +478,3 @@ export const useDroneStore = create<DroneStoreState>((set) => ({
     }
   },
 }));
-

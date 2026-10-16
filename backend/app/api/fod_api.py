@@ -114,3 +114,74 @@ def get_fod_video(job_id: str):
     if not path or not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Analyzed video not found")
     return FileResponse(path, media_type="video/mp4", filename=Path(path).name)
+
+
+# -------------------------------------------------------------------------
+# Runway Pathway ROI Endpoints (PRD Functional Requirements FR-ROI-01..06)
+# -------------------------------------------------------------------------
+from pydantic import BaseModel, Field
+from backend.app.services.runway_roi_service import runway_roi_service
+
+class ROIConfigRequest(BaseModel):
+    key: str = Field(..., description="Camera ID or video source identifier")
+    polygon: List[List[float]] = Field(..., description="Polygon vertices [[x, y], ...]")
+    image_width: int = Field(1920, description="Image frame width in pixels")
+    image_height: int = Field(1080, description="Image frame height in pixels")
+
+class ROIValidateRequest(BaseModel):
+    polygon: List[List[float]]
+    image_width: int = 1920
+    image_height: int = 1080
+
+@router.get("/roi/profiles")
+def get_runway_roi_profiles():
+    """Returns registered runway pathway profiles, active settings, and boundary rules."""
+    return {
+        "enabled": runway_roi_service.enabled,
+        "default_boundary_rule": runway_roi_service.default_boundary_rule,
+        "min_overlap_ratio": runway_roi_service.min_overlap_ratio,
+        "strict_mode": runway_roi_service.strict_mode,
+        "registered_profiles": runway_roi_service._roi_registry,
+        "supported_rules": ["BOTTOM_CENTER", "CENTROID", "INTERSECTION_AREA", "STRICT_INSIDE", "HYBRID"],
+    }
+
+@router.post("/roi/configure")
+def configure_runway_roi(payload: ROIConfigRequest):
+    """Registers or updates a runway pathway ROI for a camera or video source."""
+    success = runway_roi_service.register_roi(
+        key=payload.key,
+        polygon=payload.polygon,
+        image_width=payload.image_width,
+        image_height=payload.image_height,
+    )
+    if not success:
+        raise HTTPException(status_code=400, detail="Invalid runway pathway polygon geometry")
+    return {
+        "status": "success",
+        "key": payload.key,
+        "polygon": runway_roi_service._roi_registry.get(payload.key),
+        "message": f"Runway pathway ROI registered successfully for '{payload.key}'",
+    }
+
+@router.post("/roi/validate")
+def validate_runway_roi(payload: ROIValidateRequest):
+    """Validates geometry and reports metrics for a candidate runway pathway polygon."""
+    valid, err, contour = runway_roi_service.validate_polygon(
+        payload.polygon,
+        image_width=payload.image_width,
+        image_height=payload.image_height
+    )
+    norm_coords = runway_roi_service.to_normalized_coords(
+        payload.polygon,
+        image_width=payload.image_width,
+        image_height=payload.image_height
+    ) if valid else []
+
+    area_px = float(cv2.contourArea(contour)) if contour is not None else 0.0
+    return {
+        "is_valid": valid,
+        "error": err,
+        "vertex_count": len(payload.polygon),
+        "area_pixels": area_px,
+        "normalized_polygon": norm_coords,
+    }

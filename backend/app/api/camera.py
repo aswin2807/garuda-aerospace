@@ -12,6 +12,8 @@ from backend.app.schemas.camera import (
     CameraStatusResponse,
     CameraDisconnectResponse,
     CameraListItem,
+    FlightCompleteResponse,
+    FlightSummaryResponse,
 )
 from backend.app.services.camera_service import camera_service
 
@@ -49,20 +51,23 @@ def connect_camera(request: CameraConnectRequest, db: Session = Depends(get_db))
                 detail=reach_msg
             )
 
-    # Phase 3: Connect Stream
+    # Phase 3: Connect Stream & Start Flight Analysis (FR-01, FR-02)
     stream = camera_service.connect_camera(
         camera_id=camera_id,
         stream_url=stream_url,
         camera_name=request.camera_name or "IP Camera 01",
-        is_simulated=is_simulated
+        is_simulated=is_simulated,
+        flight_id=request.flight_id
     )
 
     return {
         "success": True,
         "camera_id": camera_id,
+        "flight_id": stream.flight_id,
+        "flight_status": stream.flight_status,
         "status": stream.status,
-        "message": f"Connected to camera stream: {stream_url}",
-        "stream_url": stream_url,
+        "message": f"Connected to camera stream: {stream.sanitized_url}",
+        "stream_url": stream.sanitized_url,
         "fps": stream.fps,
         "latency_ms": stream.latency_ms,
     }
@@ -74,14 +79,43 @@ def get_camera_status(camera_id: str):
         raise HTTPException(status_code=404, detail=f"Camera {camera_id} not found")
     return info
 
+@router.post("/{camera_id}/complete-flight", response_model=FlightCompleteResponse)
+def complete_flight(camera_id: str):
+    """Finalizes drone flight analysis and generates the pre-landing summary (FR-06)."""
+    summary = camera_service.complete_flight(camera_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail=f"No flight session active or recorded for camera {camera_id}")
+    return {
+        "success": True,
+        "camera_id": camera_id,
+        "flight_id": summary.get("flight_id", "FLIGHT-UNKNOWN"),
+        "flight_status": summary.get("flight_status", "COMPLETED"),
+        "summary_status": summary.get("summary_status", "READY"),
+        "summary": summary
+    }
+
+@router.get("/{camera_id}/flight-summary", response_model=FlightSummaryResponse)
+def get_flight_summary(camera_id: str):
+    """Retrieves consolidated pre-landing / completed flight summary (FR-06)."""
+    summary = camera_service.get_flight_summary(camera_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail=f"No flight summary found for camera {camera_id}")
+    return summary
+
 @router.post("/{camera_id}/disconnect", response_model=CameraDisconnectResponse)
 def disconnect_camera(camera_id: str):
+    summary = camera_service.get_flight_summary(camera_id)
     success = camera_service.disconnect_camera(camera_id)
+    if not summary:
+        summary = camera_service.get_flight_summary(camera_id)
     return {
         "success": success,
         "camera_id": camera_id,
+        "flight_id": summary.get("flight_id") if summary else None,
+        "flight_status": "COMPLETED",
         "status": "DISCONNECTED",
         "message": "Camera disconnected successfully" if success else "Camera was not active",
+        "pre_landing_summary": summary,
     }
 
 @router.get("/{camera_id}/feed")
